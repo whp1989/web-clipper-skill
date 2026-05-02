@@ -156,6 +156,27 @@ Pure Python 3 standard library only:
 
 No pip install required.
 
+## Audio Transcription (OpenRouter)
+
+For podcast/audio content, the skill can transcribe audio using OpenRouter API:
+
+```bash
+# Transcribe with OpenRouter (requires API key)
+python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py \
+  "https://www.xiaoyuzhoufm.com/episode/xxx" \
+  --transcribe \
+  --whisper-url "openrouter" \
+  --openrouter-key "sk-or-v1-..."
+```
+
+**Supported models:**
+- `mistralai/voxtral-small-24b-2507` (tested, supports Chinese)
+- Other audio-capable models on OpenRouter
+
+**Cost:** ~$0.03 per 5-minute segment
+
+**Note:** Audio is automatically split into 5-minute segments to avoid API limits.
+
 ## Future Enhancements
 
 - Playwright/Selenium fallback for heavy JS sites
