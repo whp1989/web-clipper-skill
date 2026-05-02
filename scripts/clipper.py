@@ -47,9 +47,9 @@ def check_parser_health(domain, result):
     elif not result.get('title') or result.get('title') in ('', 'Untitled'):
         health['failure'] += 1
         health['last_error'] = 'Empty title'
-    elif not result.get('content') or len(result.get('content', '')) < 100:
+    elif not result.get('content') and not result.get('audio_url'):
         health['failure'] += 1
-        health['last_error'] = f'Content too short: {len(result.get("content", ""))} chars'
+        health['last_error'] = 'No content or audio'
     else:
         health['success'] += 1
     
@@ -72,6 +72,7 @@ def diagnose_failure(url, html, result, error=None):
         'html_length': len(html),
         'has_title': bool(result and result.get('title')),
         'has_content': bool(result and result.get('content') and len(result.get('content', '')) > 100),
+        'has_audio': bool(result and result.get('audio_url')),
         'error': error,
         'suggestions': []
     }
@@ -89,11 +90,11 @@ def diagnose_failure(url, html, result, error=None):
     if result and not result.get('title'):
         diagnosis['suggestions'].append('Title extraction failed - check title selectors')
     
-    if result and not result.get('content'):
-        diagnosis['suggestions'].append('Content extraction failed - check content container selectors')
+    if result and not result.get('content') and not result.get('audio_url'):
+        diagnosis['suggestions'].append('Content/audio extraction failed - check content container selectors')
     
     # Check for structure changes
-    if html and not diagnosis['has_content']:
+    if html and not diagnosis['has_content'] and not diagnosis['has_audio']:
         # Look for common content containers
         containers = ['article', 'main', '.content', '.post', '.entry']
         found = []
@@ -190,6 +191,94 @@ def save_evolution_report(url, html, result, error=None, output_dir=None):
             diagnosis['suggestions'].append(f'Found potential containers: {found}')
     
     return diagnosis
+
+
+# ========== Audio Extraction Functions ==========
+def extract_audio_url(html, url):
+    """Extract audio URL from podcast pages (e.g., Xiaoyuzhou FM)."""
+    audio_patterns = [
+        r'"mp3Url"[:\s]*"([^"]+)"',
+        r'"audioUrl"[:\s]*"([^"]+)"',
+        r'"mediaUrl"[:\s]*"([^"]+)"',
+        r'"playUrl"[:\s]*"([^"]+)"',
+        r'"url"[:\s]*"([^"]+\.(?:mp3|m4a|aac|ogg))"',
+        r'https?://[^"\'<>\s]+\.(?:mp3|m4a|aac|ogg)',
+    ]
+    
+    for pattern in audio_patterns:
+        matches = re.findall(pattern, html, re.IGNORECASE)
+        for match in matches:
+            if isinstance(match, tuple):
+                match = match[0]
+            if match and match.startswith('http'):
+                return match
+    
+    return None
+
+
+def download_audio(url, output_path, timeout=120):
+    """Download audio file to local path."""
+    try:
+        headers = {'User-Agent': USER_AGENT}
+        req = urllib.request.Request(url, headers=headers)
+        
+        print(f"🎵 Downloading audio: {url[:60]}...", file=sys.stderr)
+        
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = response.read()
+            
+            if len(data) < 1000:
+                print(f"  ⚠️ Audio file too small: {len(data)} bytes", file=sys.stderr)
+                return False
+            
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(data)
+            
+            size_mb = len(data) / (1024 * 1024)
+            print(f"  ✅ Audio saved: {output_path} ({size_mb:.1f} MB)", file=sys.stderr)
+            return True
+    
+    except Exception as e:
+        print(f"  ❌ Audio download failed: {e}", file=sys.stderr)
+        return False
+
+
+# ========== Xiaoyuzhou FM Parser ==========
+@register_parser("xiaoyuzhoufm.com")
+def parse_xiaoyuzhou(html, url):
+    """Parse Xiaoyuzhou FM episode page and extract audio."""
+    result = {
+        'title': None,
+        'content': '',
+        'description': '',
+        'images': [],
+        'audio_url': None,
+        'audio_file': None,
+    }
+    
+    # Extract title
+    title_match = re.search(r'<title>(.*?)</title>', html, re.DOTALL)
+    if title_match:
+        title = title_match.group(1).strip()
+        # Remove site name suffix
+        title = re.sub(r'\s*[-|]\s*小宇宙.*$', '', title)
+        title = re.sub(r'\s*[-|]\s*听播客.*$', '', title)
+        result['title'] = title
+    
+    # Extract description from meta
+    description = extract_meta_content(html, 'description')
+    if description:
+        result['description'] = description
+        result['content'] = description
+    
+    # Extract audio URL
+    audio_url = extract_audio_url(html, url)
+    if audio_url:
+        result['audio_url'] = audio_url
+        print(f"🎵 Found audio URL: {audio_url[:60]}...", file=sys.stderr)
+    
+    return result
 
 
 # ========== Wall Street CN Parser ==========
@@ -488,12 +577,12 @@ def parse_bilibili(html, url):
     
     # Check if it's an opus (图文动态)
     opus = data.get('opus', {})
-    if opus:
+    if opus and opus.get('detail'):
         return _parse_bilibili_opus(opus, url)
     
     # Check if it's a video page
     video_data = data.get('video', {})
-    if video_data:
+    if video_data and video_data.get('videoInfo'):
         return _parse_bilibili_video(video_data, url)
     
     return None
@@ -501,7 +590,10 @@ def parse_bilibili(html, url):
 
 def _parse_bilibili_opus(opus_data, url):
     """Parse Bilibili opus (图文动态) format."""
-    detail = opus_data.get('detail', {})
+    detail = opus_data.get('detail')
+    if not detail:
+        return None
+    
     modules = detail.get('modules', [])
     
     # Extract title
@@ -1186,13 +1278,25 @@ def clip_article(url, test_mode=False):
     content = result.get('content', '')
     description = result.get('description', '')
     images = result.get('images', [])
+    audio_url = result.get('audio_url')
+    audio_file = result.get('audio_file')
     
     print(f"📄 Title: {title}", file=sys.stderr)
     print(f"📄 Content length: {len(content)}", file=sys.stderr)
     print(f"🖼️ Images: {len(images)}", file=sys.stderr)
+    if audio_url:
+        print(f"🎵 Audio URL: {audio_url[:60]}...", file=sys.stderr)
     
-    # Save evolution report if content is suspiciously short
-    if len(content) < 200:
+    # Download audio if available
+    if audio_url:
+        audio_filename = sanitize_filename(title) + ".m4a"
+        audio_output_path = OUTPUT_BASE / "multimedia" / audio_filename
+        if download_audio(audio_url, audio_output_path):
+            audio_file = str(audio_output_path)
+            result['audio_file'] = audio_file
+    
+    # Save evolution report if content is suspiciously short and no audio
+    if len(content) < 200 and not audio_url:
         print(f"⚠️ Content very short - saving evolution report for analysis", file=sys.stderr)
         save_evolution_report(url, html, result)
     

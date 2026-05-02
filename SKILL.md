@@ -42,13 +42,14 @@ python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "<URL>"
 
 ## Supported Sites
 
-| Site | Domain | Parser Type |
-|------|--------|-------------|
-| 华尔街见闻 | wallstreetcn.com | JSON embedded data |
-| 少数派 | sspai.com | HTML structure |
-| Bilibili | bilibili.com | JSON (__INITIAL_STATE__) |
-| 微信公众号 | mp.weixin.qq.com | HTML + image extraction |
-| 其他网站 | * | Generic HTML parser |
+| Site | Domain | Parser Type | Audio Support |
+|------|--------|-------------|---------------|
+| 华尔街见闻 | wallstreetcn.com | JSON embedded data | ❌ |
+| 少数派 | sspai.com | HTML structure | ❌ |
+| Bilibili | bilibili.com | JSON (__INITIAL_STATE__) | ❌ |
+| 微信公众号 | mp.weixin.qq.com | HTML + image extraction | ❌ |
+| 小宇宙 FM | xiaoyuzhoufm.com | Audio extraction | ✅ M4A |
+| 其他网站 | * | Generic HTML parser | ❌ |
 
 ## Parser Architecture
 
