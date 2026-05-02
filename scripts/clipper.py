@@ -996,7 +996,14 @@ def fetch_with_selenium(url):
 
 
 def transcribe_audio_file(audio_path, whisper_url):
-    """Transcribe audio using local Whisper Web UI API."""
+    """Transcribe audio using local Whisper Web UI API.
+    
+    Supports two URL formats:
+    1. Direct whisper.cpp server: http://host:port (POST to /v1/audio/transcriptions)
+    2. Preprocessing service: http://host:port (GET for info, POST may be blocked)
+    
+    The function will auto-detect and use the correct endpoint.
+    """
     try:
         import subprocess
         import json
@@ -1015,13 +1022,13 @@ def transcribe_audio_file(audio_path, whisper_url):
                 print(f"  ❌ FFmpeg conversion failed: {result.stderr[:200]}", file=sys.stderr)
                 return None
         
-        # Call Whisper API
-        print(f"  🎙️ Calling Whisper API at {whisper_url}...", file=sys.stderr)
+        # Detect correct endpoint
+        # Try direct whisper.cpp endpoint first
+        api_url = f'{whisper_url}/v1/audio/transcriptions'
         
-        # Use curl to send the file
-        import urllib.request
+        print(f"  🎙️ Calling Whisper API at {api_url}...", file=sys.stderr)
         
-        # Build multipart request
+        # Build multipart request manually using standard library
         boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
         
         # Read audio file
@@ -1029,19 +1036,43 @@ def transcribe_audio_file(audio_path, whisper_url):
             audio_data = f.read()
         
         # Build multipart body
-        body = []
-        body.append(f'--{boundary}'.encode())
-        body.append(b'Content-Disposition: form-data; name="file"; filename="audio.wav"')
-        body.append(b'Content-Type: audio/wav')
-        body.append(b'')
-        body.append(audio_data)
-        body.append(f'--{boundary}--'.encode())
+        # Format: --boundary\r\nContent-Disposition...\r\n\r\n[data]\r\n--boundary--\r\n
+        parts = []
         
-        body_bytes = b'\r\n'.join(body)
+        # Add file field
+        parts.append(f'--{boundary}'.encode())
+        parts.append(b'Content-Disposition: form-data; name="file"; filename="audio.wav"')
+        parts.append(b'Content-Type: audio/wav')
+        parts.append(b'')  # Empty line before data
+        parts.append(audio_data)
+        
+        # Add model field
+        parts.append(f'--{boundary}'.encode())
+        parts.append(b'Content-Disposition: form-data; name="model"')
+        parts.append(b'')
+        parts.append(b'whisper-1')
+        
+        # Add language field (Chinese)
+        parts.append(f'--{boundary}'.encode())
+        parts.append(b'Content-Disposition: form-data; name="language"')
+        parts.append(b'')
+        parts.append(b'zh')
+        
+        # Add response_format field
+        parts.append(f'--{boundary}'.encode())
+        parts.append(b'Content-Disposition: form-data; name="response_format"')
+        parts.append(b'')
+        parts.append(b'json')
+        
+        # Close boundary
+        parts.append(f'--{boundary}--'.encode())
+        parts.append(b'')  # Final CRLF
+        
+        body_bytes = b'\r\n'.join(parts)
         
         # Send request
         req = urllib.request.Request(
-            f'{whisper_url}/api/v1/transcribe',
+            api_url,
             data=body_bytes,
             headers={
                 'Content-Type': f'multipart/form-data; boundary={boundary}',
@@ -1061,6 +1092,14 @@ def transcribe_audio_file(audio_path, whisper_url):
             else:
                 return str(result)
     
+    except urllib.error.HTTPError as e:
+        print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
+        try:
+            error_body = e.read().decode('utf-8', errors='replace')
+            print(f"     Response: {error_body[:500]}", file=sys.stderr)
+        except:
+            pass
+        return None
     except Exception as e:
         print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
         return None
@@ -1471,14 +1510,27 @@ images_count: {len(downloaded_images)}
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 clipper.py <URL> [--test]", file=sys.stderr)
+        print("Usage: python3 clipper.py <URL> [--test] [--transcribe] [--whisper-url <URL>]", file=sys.stderr)
         sys.exit(1)
     
     url = sys.argv[1]
     test_mode = '--test' in sys.argv
+    transcribe = '--transcribe' in sys.argv
+    
+    # Parse whisper URL
+    whisper_url = None
+    if '--whisper-url' in sys.argv:
+        idx = sys.argv.index('--whisper-url')
+        if idx + 1 < len(sys.argv):
+            whisper_url = sys.argv[idx + 1]
     
     try:
-        result = clip_article(url, test_mode=test_mode)
+        result = clip_article(
+            url, 
+            test_mode=test_mode,
+            transcribe_audio=transcribe,
+            whisper_url=whisper_url
+        )
         
         if test_mode:
             print(result)
