@@ -106,6 +106,27 @@ When a parser breaks:
 4. Test with `--test` flag
 5. Health tracking will automatically detect improvement
 
+## GitHub Repository
+
+**URL**: https://github.com/whp1989/web-clipper-skill
+
+### Auto-Push Updates
+After modifying `clipper.py` or `SKILL.md`:
+```bash
+bash ~/.openclaw/skills/web-clipper/scripts/push-to-github.sh
+```
+
+This automatically:
+1. Copies latest files to the repo
+2. Commits with timestamp and change summary
+3. Pushes to GitHub
+
+### For Other Agents
+Other agents can install this skill:
+```bash
+git clone https://github.com/whp1989/web-clipper-skill.git ~/.openclaw/skills/web-clipper
+```
+
 ## Error Handling
 
 If `clipper.py` fails:
