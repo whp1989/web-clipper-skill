@@ -993,6 +993,78 @@ def fetch_with_selenium(url):
         return None
 
 
+
+
+def transcribe_audio_file(audio_path, whisper_url):
+    """Transcribe audio using local Whisper Web UI API."""
+    try:
+        import subprocess
+        import json
+        
+        # Convert to WAV if needed (Whisper works best with WAV)
+        wav_path = audio_path.rsplit('.', 1)[0] + '.wav'
+        if not os.path.exists(wav_path):
+            print(f"  🔄 Converting to WAV...", file=sys.stderr)
+            result = subprocess.run([
+                'ffmpeg', '-i', audio_path,
+                '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+                wav_path, '-y'
+            ], capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                print(f"  ❌ FFmpeg conversion failed: {result.stderr[:200]}", file=sys.stderr)
+                return None
+        
+        # Call Whisper API
+        print(f"  🎙️ Calling Whisper API at {whisper_url}...", file=sys.stderr)
+        
+        # Use curl to send the file
+        import urllib.request
+        
+        # Build multipart request
+        boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
+        
+        # Read audio file
+        with open(wav_path, 'rb') as f:
+            audio_data = f.read()
+        
+        # Build multipart body
+        body = []
+        body.append(f'--{boundary}'.encode())
+        body.append(b'Content-Disposition: form-data; name="file"; filename="audio.wav"')
+        body.append(b'Content-Type: audio/wav')
+        body.append(b'')
+        body.append(audio_data)
+        body.append(f'--{boundary}--'.encode())
+        
+        body_bytes = b'\r\n'.join(body)
+        
+        # Send request
+        req = urllib.request.Request(
+            f'{whisper_url}/api/v1/transcribe',
+            data=body_bytes,
+            headers={
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
+                'Accept': 'application/json',
+            },
+            method='POST'
+        )
+        
+        with urllib.request.urlopen(req, timeout=600) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            
+            # Extract transcription text
+            if 'text' in result:
+                return result['text']
+            elif 'segments' in result:
+                return ' '.join(seg.get('text', '') for seg in result['segments'])
+            else:
+                return str(result)
+    
+    except Exception as e:
+        print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
+        return None
+
 # ========== Core Functions ==========
 def fetch_url(url, timeout=30):
     """Fetch URL content with proper headers. Returns (html, final_url)."""
@@ -1187,7 +1259,7 @@ def get_domain(url):
     return parsed.netloc.lower()
 
 
-def clip_article(url, test_mode=False):
+def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None):
     """Main clipping function."""
     
     print(f"📥 Fetching: {url}", file=sys.stderr)
@@ -1294,6 +1366,14 @@ def clip_article(url, test_mode=False):
         if download_audio(audio_url, audio_output_path):
             audio_file = str(audio_output_path)
             result['audio_file'] = audio_file
+            
+            # Transcribe audio if requested and whisper URL provided
+            if transcribe_audio and whisper_url:
+                print(f"🎙️ Transcribing audio via Whisper API...", file=sys.stderr)
+                transcription = transcribe_audio_file(audio_file, whisper_url)
+                if transcription:
+                    result['transcription'] = transcription
+                    print(f"✅ Transcription complete: {len(transcription)} chars", file=sys.stderr)
     
     # Save evolution report if content is suspiciously short and no audio
     if len(content) < 200 and not audio_url:
