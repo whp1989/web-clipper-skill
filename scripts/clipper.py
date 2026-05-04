@@ -912,8 +912,147 @@ def _parse_bilibili_opus(opus_data, url):
     }
 
 
+# ========== Bilibili Parser ==========
+@register_parser("bilibili.com")
+def parse_bilibili(html, url):
+    """Parse Bilibili content - supports opus (图文动态) and video pages."""
+    
+    # Extract __INITIAL_STATE__ from HTML
+    match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
+    if not match:
+        return None
+    
+    try:
+        data = json.loads(match.group(1))
+    except:
+        return None
+    
+    # Check if it's an opus (图文动态)
+    opus = data.get('opus', {})
+    if opus and opus.get('detail'):
+        return _parse_bilibili_opus(opus, url)
+    
+    # Check if it's a video page
+    video_data = data.get('video', {})
+    if video_data and video_data.get('videoInfo'):
+        return _parse_bilibili_video(video_data, url)
+    
+    return None
+
+
+def _parse_bilibili_opus(opus_data, url):
+    """Parse Bilibili opus (图文动态) format."""
+    detail = opus_data.get('detail')
+    if not detail:
+        return None
+    
+    modules = detail.get('modules', [])
+    
+    # Extract title
+    title = ""
+    for module in modules:
+        if 'module_title' in module:
+            title = module['module_title'].get('text', '')
+            break
+    
+    # Fallback: use basic title
+    if not title:
+        basic = detail.get('basic', {})
+        title = basic.get('title', 'Bilibili动态')
+    
+    # Extract content
+    content_parts = []
+    images = []
+    
+    for module in modules:
+        # Extract images from module_top (album/cover images)
+        if 'module_top' in module:
+            top = module['module_top']
+            display = top.get('display', {})
+            album = display.get('album', {})
+            pics = album.get('pics', [])
+            for pic in pics:
+                pic_url = pic.get('url', '')
+                if pic_url:
+                    if pic_url.startswith('//'):
+                        pic_url = 'https:' + pic_url
+                    elif pic_url.startswith('http://'):
+                        pic_url = 'https://' + pic_url[7:]
+                    images.append((pic_url, ''))
+                    content_parts.append(f'\n![image]({pic_url})\n')
+        
+        # Extract content text and inline images
+        if 'module_content' in module:
+            content = module['module_content']
+            paragraphs = content.get('paragraphs', [])
+            
+            for para in paragraphs:
+                text_nodes = para.get('text', {}).get('nodes', [])
+                para_text = []
+                
+                for node in text_nodes:
+                    node_type = node.get('type', '')
+                    
+                    if node_type == 'TEXT_NODE_TYPE_WORD':
+                        word = node.get('word', {})
+                        text = word.get('words', '')
+                        if text:
+                            para_text.append(text)
+                    
+                    elif node_type == 'TEXT_NODE_TYPE_RICH':
+                        rich = node.get('rich', {})
+                        text = rich.get('text', '')
+                        if text:
+                            para_text.append(text)
+                    
+                    elif node_type == 'TEXT_NODE_TYPE_PIC':
+                        pic = node.get('pic', {})
+                        pic_url = pic.get('url', '')
+                        if pic_url:
+                            if pic_url.startswith('//'):
+                                pic_url = 'https:' + pic_url
+                            elif pic_url.startswith('http://'):
+                                pic_url = 'https://' + pic_url[7:]
+                            images.append((pic_url, ''))
+                            para_text.append(f'\n![image]({pic_url})\n')
+                        # Also check for pics array
+                        pics = pic.get('pics', [])
+                        for p in pics:
+                            url = p.get('url', '')
+                            if url:
+                                if url.startswith('//'):
+                                    url = 'https:' + url
+                                elif url.startswith('http://'):
+                                    url = 'https://' + url[7:]
+                                images.append((url, ''))
+                                para_text.append(f'\n![image]({url})\n')
+                
+                if para_text:
+                    content_parts.append(''.join(para_text))
+    
+    # Extract author info
+    author_name = ""
+    for module in modules:
+        if 'module_author' in module:
+            author = module['module_author']
+            author_name = author.get('name', '')
+            break
+    
+    content = '\n\n'.join(content_parts) if content_parts else "(无文字内容)"
+    
+    # Add author info
+    if author_name:
+        content = f"**作者**: {author_name}\n\n---\n\n{content}"
+    
+    return {
+        'title': title,
+        'content': content,
+        'images': images
+    }
+
+
 def _parse_bilibili_video(video_data, url):
-    """Parse Bilibili video page."""
+    """Parse Bilibili video page and download video for transcription."""
     # Extract video info from videoData
     video_info = video_data.get('videoInfo', {})
     
@@ -947,6 +1086,11 @@ def _parse_bilibili_video(video_data, url):
     
     content = '\n\n'.join(content_parts)
     
+    # Download and transcribe video
+    transcription = download_and_transcribe_bilibili_video(url, title, bvid)
+    if transcription:
+        content += f"\n\n---\n\n**视频转录**:\n\n{transcription}"
+    
     # Extract cover image
     images = []
     cover_url = video_info.get('pic', '')
@@ -960,6 +1104,250 @@ def _parse_bilibili_video(video_data, url):
         'content': content,
         'images': images
     }
+
+
+def load_api_config():
+    """Load API config from local file (not in skill repo)."""
+    config_paths = [
+        Path("~/.openclaw/workspace/.openclaw/api-config.json").expanduser(),
+        Path("~/.openclaw/api-config.json").expanduser(),
+    ]
+    
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                continue
+    
+    return {}
+
+
+def download_and_transcribe_bilibili_video(url, title, bvid):
+    """Download Bilibili video, extract audio, and transcribe using OpenRouter."""
+    import subprocess
+    import tempfile
+    
+    config = load_api_config()
+    api_key = config.get('openrouter_api_key')
+    model = config.get('openrouter_model', 'mistralai/voxtral-small-24b-2507')
+    segment_minutes = config.get('audio_segment_minutes', 10)
+    
+    if not api_key:
+        print("  ⚠️ OpenRouter API key not found in config", file=sys.stderr)
+        return None
+    
+    # Create multimedia directory
+    multimedia_dir = OUTPUT_BASE / "multimedia"
+    multimedia_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate safe filename
+    safe_title = sanitize_filename(title) if title else bvid
+    video_path = multimedia_dir / f"{safe_title}_{bvid}.mp4"
+    audio_path = multimedia_dir / f"{safe_title}_{bvid}.mp3"
+    
+    # Check if already downloaded
+    if audio_path.exists():
+        print(f"  🎵 Audio already exists: {audio_path}", file=sys.stderr)
+    else:
+        # Download video using yt-dlp or you-get
+        print(f"  📥 Downloading video: {url}", file=sys.stderr)
+        
+        # Try yt-dlp first
+        try:
+            result = subprocess.run([
+                'yt-dlp', '-f', 'bestaudio[ext=m4a]/bestaudio',
+                '-o', str(video_path),
+                '--no-playlist',
+                url
+            ], capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                print(f"  ⚠️ yt-dlp failed, trying you-get...", file=sys.stderr)
+                # Fallback to you-get
+                result = subprocess.run([
+                    'you-get', '-o', str(multimedia_dir),
+                    '-O', f"{safe_title}_{bvid}",
+                    url
+                ], capture_output=True, text=True, timeout=300)
+                
+                if result.returncode != 0:
+                    print(f"  ❌ Video download failed", file=sys.stderr)
+                    return None
+        except FileNotFoundError:
+            print("  ❌ yt-dlp/you-get not installed", file=sys.stderr)
+            return None
+        
+        # Extract audio using ffmpeg
+        print(f"  🎵 Extracting audio...", file=sys.stderr)
+        result = subprocess.run([
+            'ffmpeg', '-i', str(video_path),
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '16000', '-ac', '1',
+            '-q:a', '2',
+            str(audio_path), '-y'
+        ], capture_output=True, text=True, timeout=300)
+        
+        if result.returncode != 0:
+            print(f"  ❌ Audio extraction failed: {result.stderr[:200]}", file=sys.stderr)
+            return None
+        
+        print(f"  ✅ Audio extracted: {audio_path}", file=sys.stderr)
+    
+    # Split audio into segments and transcribe
+    return transcribe_audio_segments(audio_path, api_key, model, segment_minutes)
+
+
+def transcribe_audio_segments(audio_path, api_key, model, segment_minutes=10):
+    """Split audio into segments and transcribe using OpenRouter API."""
+    import subprocess
+    import tempfile
+    import base64
+    
+    audio_path = Path(audio_path)
+    
+    # Get audio duration
+    result = subprocess.run([
+        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(audio_path)
+    ], capture_output=True, text=True, timeout=30)
+    
+    if result.returncode != 0:
+        print(f"  ❌ Failed to get audio duration", file=sys.stderr)
+        return None
+    
+    try:
+        duration = float(result.stdout.strip())
+    except:
+        print(f"  ❌ Invalid duration: {result.stdout}", file=sys.stderr)
+        return None
+    
+    print(f"  ⏱️ Audio duration: {duration:.1f}s ({duration/60:.1f}min)", file=sys.stderr)
+    
+    # Calculate segment parameters
+    segment_seconds = segment_minutes * 60
+    num_segments = int(duration / segment_seconds) + 1
+    
+    print(f"  ✂️ Splitting into {num_segments} segments ({segment_minutes}min each)", file=sys.stderr)
+    
+    transcriptions = []
+    
+    for i in range(num_segments):
+        start_time = i * segment_seconds
+        end_time = min((i + 1) * segment_seconds, duration)
+        segment_duration = end_time - start_time
+        
+        if segment_duration < 5:  # Skip very short segments
+            continue
+        
+        # Extract segment
+        segment_path = audio_path.parent / f"{audio_path.stem}_seg{i:03d}.mp3"
+        
+        result = subprocess.run([
+            'ffmpeg', '-i', str(audio_path),
+            '-ss', str(start_time), '-t', str(segment_duration),
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '16000', '-ac', '1',
+            '-q:a', '2',
+            str(segment_path), '-y'
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            print(f"  ❌ Segment {i+1} extraction failed", file=sys.stderr)
+            continue
+        
+        # Transcribe segment using OpenRouter
+        print(f"  🎙️ Transcribing segment {i+1}/{num_segments}...", file=sys.stderr)
+        
+        text = transcribe_with_openrouter(segment_path, api_key, model)
+        if text:
+            transcriptions.append(text)
+            print(f"  ✅ Segment {i+1} done ({len(text)} chars)", file=sys.stderr)
+        else:
+            print(f"  ⚠️ Segment {i+1} failed", file=sys.stderr)
+        
+        # Clean up segment file
+        segment_path.unlink(missing_ok=True)
+    
+    if transcriptions:
+        return '\n\n'.join(transcriptions)
+    
+    return None
+
+
+def transcribe_with_openrouter(audio_path, api_key, model):
+    """Transcribe audio using OpenRouter API with mistral voxtral model."""
+    import base64
+    
+    # Read audio file and encode to base64
+    with open(audio_path, 'rb') as f:
+        audio_data = f.read()
+    
+    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+    
+    # Build API request
+    api_url = "https://openrouter.ai/api/v1/chat/completions"
+    
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Transcribe this audio to text. Output only the transcription, no additional commentary."
+                    },
+                    {
+                        "type": "audio_url",
+                        "audio_url": {
+                            "url": f"data:audio/mp3;base64,{audio_base64}"
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    
+    req = urllib.request.Request(
+        api_url,
+        data=json.dumps(payload).encode('utf-8'),
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}',
+            'HTTP-Referer': 'https://openclaw.local',
+            'X-Title': 'Web Clipper Audio Transcription'
+        },
+        method='POST'
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            
+            if 'choices' in result and len(result['choices']) > 0:
+                text = result['choices'][0].get('message', {}).get('content', '')
+                return text.strip()
+            elif 'error' in result:
+                print(f"  ❌ API Error: {result['error']}", file=sys.stderr)
+                return None
+            else:
+                print(f"  ⚠️ Unexpected response: {result}", file=sys.stderr)
+                return None
+    
+    except urllib.error.HTTPError as e:
+        print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
+        try:
+            error_body = e.read().decode('utf-8', errors='replace')
+            print(f"     Response: {error_body[:500]}", file=sys.stderr)
+        except:
+            pass
+        return None
+    except Exception as e:
+        print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
+        return None
 class ArticleExtractor(HTMLParser):
     """Extract article title, content, and images from generic HTML."""
     

@@ -46,7 +46,7 @@ python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "<URL>"
 |------|--------|-------------|---------------|
 | 华尔街见闻 | wallstreetcn.com | JSON embedded data | ❌ |
 | 少数派 | sspai.com | HTML structure | ❌ |
-| Bilibili | bilibili.com | JSON (__INITIAL_STATE__) | ❌ |
+| Bilibili | bilibili.com | JSON (__INITIAL_STATE__) | ✅ 视频下载+语音转文字 |
 | 微信公众号 | mp.weixin.qq.com | HTML + image extraction | ❌ |
 | 小宇宙 FM | xiaoyuzhoufm.com | Audio extraction | ✅ M4A |
 | 其他网站 | * | Generic HTML parser | ❌ |
@@ -176,6 +176,32 @@ python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py \
 **Cost:** ~$0.03 per 5-minute segment
 
 **Note:** Audio is automatically split into 5-minute segments to avoid API limits.
+
+## API 密钥配置（本地存储，不上传GitHub）
+
+OpenRouter API 密钥等敏感信息存储在本地配置文件：
+
+**配置文件路径：**
+- `~/.openclaw/workspace/.openclaw/api-config.json`
+- `~/.openclaw/api-config.json`（备选）
+
+**配置格式：**
+```json
+{
+  "openrouter_api_key": "sk-or-v1-...",
+  "openrouter_model": "mistralai/voxtral-small-24b-2507",
+  "audio_segment_minutes": 10
+}
+```
+
+**配置项说明：**
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `openrouter_api_key` | OpenRouter API密钥 | 必填 |
+| `openrouter_model` | 语音转文字模型 | `mistralai/voxtral-small-24b-2507` |
+| `audio_segment_minutes` | 音频分段时长（分钟） | `10` |
+
+**注意：** 此配置文件包含敏感信息，请勿加入Git仓库。skill代码中通过 `load_api_config()` 函数读取此配置。
 
 ## Future Enhancements
 
