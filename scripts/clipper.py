@@ -640,23 +640,53 @@ def parse_sspai(html, url):
     
     # Find article content - look for the main content div
     content = ""
-    content_patterns = [
-        r'<div[^>]*class="article__main__content[^"]*"[^>]*>(.*?)</div>\s*<div[^>]*class="article__footer"',
-        r'<div[^>]*class="article__main__content[^"]*"[^>]*>(.*?)</div>\s*</article>',
-        r'<div[^>]*class="article__main__content[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>\s*</article>',
-        r'<div[^>]*class="article-body[^"]*"[^>]*>(.*?)</div>\s*</article>',
-        r'<article[^>]*class="normal-article[^"]*"[^>]*>.*?<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>.*?</article>',
-    ]
     
-    for pattern in content_patterns:
-        match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
-        if match:
-            content = match.group(1)
-            break
+    # Try to find article__main__content div - use a more robust approach
+    content_start = html.find('class="article__main__content')
+    if content_start > 0:
+        # Find the opening div tag
+        div_start = html.rfind('<div', 0, content_start)
+        if div_start > 0:
+            # Find the matching closing div - count nested divs
+            pos = html.find('>', div_start) + 1
+            depth = 1
+            while pos < len(html) and depth > 0:
+                next_open = html.find('<div', pos)
+                next_close = html.find('</div>', pos)
+                
+                if next_close < 0:
+                    break
+                
+                if next_open >= 0 and next_open < next_close:
+                    depth += 1
+                    pos = next_open + 4
+                else:
+                    depth -= 1
+                    if depth == 0:
+                        content = html[pos:next_close]
+                        break
+                    pos = next_close + 6
+    
+    # Fallback patterns if the above fails
+    if not content:
+        content_patterns = [
+            r'<div[^>]*class="article__main__content[^"]*"[^>]*>(.*?)</div>\s*<div[^>]*class="article__footer"',
+            r'<div[^>]*class="article__main__content[^"]*"[^>]*>(.*?)</div>\s*</article>',
+            r'<div[^>]*class="article-body[^"]*"[^>]*>(.*?)</div>\s*</article>',
+        ]
+        
+        for pattern in content_patterns:
+            match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+            if match:
+                content = match.group(1)
+                break
     
     # If still no content, try a more general approach
     if not content:
         # Find all content-like divs and pick the largest
+        content_divs = re.findall(r'<div[^>]*class="[^"]*(?:content|article|post)[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
+        if content_divs:
+            content = max(content_divs, key=len)
         content_divs = re.findall(r'<div[^>]*class="[^"]*(?:content|article|post)[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
         if content_divs:
             content = max(content_divs, key=len)
@@ -667,6 +697,14 @@ def parse_sspai(html, url):
     # Clean up the content HTML
     content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Fix SSPAI image URLs - use imageMogr2 format instead of imageView2
+    # The imageView2 format causes 403 errors, imageMogr2 works correctly
+    content = re.sub(
+        r'(https://cdnfile\.sspai\.com/[^"\'>\s]+)\?imageView2/[^"\'>\s]*',
+        r'\1?imageMogr2/auto-orient/format/webp/ignore-error/1',
+        content
+    )
     
     # Remove SSPAI-specific footer elements - more aggressive cleaning
     # Remove share buttons, comments section, editor info, etc.
