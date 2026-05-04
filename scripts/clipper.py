@@ -47,9 +47,10 @@ def check_parser_health(domain, result):
     elif not result.get('title') or result.get('title') in ('', 'Untitled'):
         health['failure'] += 1
         health['last_error'] = 'Empty title'
-    elif not result.get('content') and not result.get('audio_url'):
+    elif not result.get('content') and not result.get('audio_url') and not result.get('video_url'):
+        # For video pages, content might be short (just description), but should have video_url or images
         health['failure'] += 1
-        health['last_error'] = 'No content or audio'
+        health['last_error'] = 'No content or audio or video'
     else:
         health['success'] += 1
     
@@ -795,274 +796,61 @@ def parse_bilibili(html, url):
     
     # Check if it's a video page
     video_data = data.get('video', {})
-    if video_data and video_data.get('videoInfo'):
-        return _parse_bilibili_video(video_data, url)
+    if video_data:
+        # videoInfo might be empty dict in new structure, check other keys
+        video_info = video_data.get('videoInfo', {})
+        if video_info and video_info.get('title'):
+            return _parse_bilibili_video(video_data, url)
+        # Also check if there's viewInfo (new structure)
+        if video_data.get('viewInfo'):
+            return _parse_bilibili_video(video_data, url)
     
     return None
-
-
-def _parse_bilibili_opus(opus_data, url):
-    """Parse Bilibili opus (图文动态) format."""
-    detail = opus_data.get('detail')
-    if not detail:
-        return None
-    
-    modules = detail.get('modules', [])
-    
-    # Extract title
-    title = ""
-    for module in modules:
-        if 'module_title' in module:
-            title = module['module_title'].get('text', '')
-            break
-    
-    # Fallback: use basic title
-    if not title:
-        basic = detail.get('basic', {})
-        title = basic.get('title', 'Bilibili动态')
-    
-    # Extract content
-    content_parts = []
-    images = []
-    
-    for module in modules:
-        # Extract images from module_top (album/cover images)
-        if 'module_top' in module:
-            top = module['module_top']
-            display = top.get('display', {})
-            album = display.get('album', {})
-            pics = album.get('pics', [])
-            for pic in pics:
-                pic_url = pic.get('url', '')
-                if pic_url:
-                    if pic_url.startswith('//'):
-                        pic_url = 'https:' + pic_url
-                    elif pic_url.startswith('http://'):
-                        pic_url = 'https://' + pic_url[7:]
-                    images.append((pic_url, ''))
-                    content_parts.append(f'\n![image]({pic_url})\n')
-        
-        # Extract content text and inline images
-        if 'module_content' in module:
-            content = module['module_content']
-            paragraphs = content.get('paragraphs', [])
-            
-            for para in paragraphs:
-                text_nodes = para.get('text', {}).get('nodes', [])
-                para_text = []
-                
-                for node in text_nodes:
-                    node_type = node.get('type', '')
-                    
-                    if node_type == 'TEXT_NODE_TYPE_WORD':
-                        word = node.get('word', {})
-                        text = word.get('words', '')
-                        if text:
-                            para_text.append(text)
-                    
-                    elif node_type == 'TEXT_NODE_TYPE_RICH':
-                        rich = node.get('rich', {})
-                        text = rich.get('text', '')
-                        if text:
-                            para_text.append(text)
-                    
-                    elif node_type == 'TEXT_NODE_TYPE_PIC':
-                        pic = node.get('pic', {})
-                        pic_url = pic.get('url', '')
-                        if pic_url:
-                            if pic_url.startswith('//'):
-                                pic_url = 'https:' + pic_url
-                            elif pic_url.startswith('http://'):
-                                pic_url = 'https://' + pic_url[7:]
-                            images.append((pic_url, ''))
-                            para_text.append(f'\n![image]({pic_url})\n')
-                        # Also check for pics array
-                        pics = pic.get('pics', [])
-                        for p in pics:
-                            url = p.get('url', '')
-                            if url:
-                                if url.startswith('//'):
-                                    url = 'https:' + url
-                                elif url.startswith('http://'):
-                                    url = 'https://' + url[7:]
-                                images.append((url, ''))
-                                para_text.append(f'\n![image]({url})\n')
-                
-                if para_text:
-                    content_parts.append(''.join(para_text))
-    
-    # Extract author info
-    author_name = ""
-    for module in modules:
-        if 'module_author' in module:
-            author = module['module_author']
-            author_name = author.get('name', '')
-            break
-    
-    content = '\n\n'.join(content_parts) if content_parts else "(无文字内容)"
-    
-    # Add author info
-    if author_name:
-        content = f"**作者**: {author_name}\n\n---\n\n{content}"
-    
-    return {
-        'title': title,
-        'content': content,
-        'images': images
-    }
-
-
-# ========== Bilibili Parser ==========
-@register_parser("bilibili.com")
-def parse_bilibili(html, url):
-    """Parse Bilibili content - supports opus (图文动态) and video pages."""
-    
-    # Extract __INITIAL_STATE__ from HTML
-    match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', html, re.DOTALL)
-    if not match:
-        return None
-    
-    try:
-        data = json.loads(match.group(1))
-    except:
-        return None
-    
-    # Check if it's an opus (图文动态)
-    opus = data.get('opus', {})
-    if opus and opus.get('detail'):
-        return _parse_bilibili_opus(opus, url)
-    
-    # Check if it's a video page
-    video_data = data.get('video', {})
-    if video_data and video_data.get('videoInfo'):
-        return _parse_bilibili_video(video_data, url)
-    
-    return None
-
-
-def _parse_bilibili_opus(opus_data, url):
-    """Parse Bilibili opus (图文动态) format."""
-    detail = opus_data.get('detail')
-    if not detail:
-        return None
-    
-    modules = detail.get('modules', [])
-    
-    # Extract title
-    title = ""
-    for module in modules:
-        if 'module_title' in module:
-            title = module['module_title'].get('text', '')
-            break
-    
-    # Fallback: use basic title
-    if not title:
-        basic = detail.get('basic', {})
-        title = basic.get('title', 'Bilibili动态')
-    
-    # Extract content
-    content_parts = []
-    images = []
-    
-    for module in modules:
-        # Extract images from module_top (album/cover images)
-        if 'module_top' in module:
-            top = module['module_top']
-            display = top.get('display', {})
-            album = display.get('album', {})
-            pics = album.get('pics', [])
-            for pic in pics:
-                pic_url = pic.get('url', '')
-                if pic_url:
-                    if pic_url.startswith('//'):
-                        pic_url = 'https:' + pic_url
-                    elif pic_url.startswith('http://'):
-                        pic_url = 'https://' + pic_url[7:]
-                    images.append((pic_url, ''))
-                    content_parts.append(f'\n![image]({pic_url})\n')
-        
-        # Extract content text and inline images
-        if 'module_content' in module:
-            content = module['module_content']
-            paragraphs = content.get('paragraphs', [])
-            
-            for para in paragraphs:
-                text_nodes = para.get('text', {}).get('nodes', [])
-                para_text = []
-                
-                for node in text_nodes:
-                    node_type = node.get('type', '')
-                    
-                    if node_type == 'TEXT_NODE_TYPE_WORD':
-                        word = node.get('word', {})
-                        text = word.get('words', '')
-                        if text:
-                            para_text.append(text)
-                    
-                    elif node_type == 'TEXT_NODE_TYPE_RICH':
-                        rich = node.get('rich', {})
-                        text = rich.get('text', '')
-                        if text:
-                            para_text.append(text)
-                    
-                    elif node_type == 'TEXT_NODE_TYPE_PIC':
-                        pic = node.get('pic', {})
-                        pic_url = pic.get('url', '')
-                        if pic_url:
-                            if pic_url.startswith('//'):
-                                pic_url = 'https:' + pic_url
-                            elif pic_url.startswith('http://'):
-                                pic_url = 'https://' + pic_url[7:]
-                            images.append((pic_url, ''))
-                            para_text.append(f'\n![image]({pic_url})\n')
-                        # Also check for pics array
-                        pics = pic.get('pics', [])
-                        for p in pics:
-                            url = p.get('url', '')
-                            if url:
-                                if url.startswith('//'):
-                                    url = 'https:' + url
-                                elif url.startswith('http://'):
-                                    url = 'https://' + url[7:]
-                                images.append((url, ''))
-                                para_text.append(f'\n![image]({url})\n')
-                
-                if para_text:
-                    content_parts.append(''.join(para_text))
-    
-    # Extract author info
-    author_name = ""
-    for module in modules:
-        if 'module_author' in module:
-            author = module['module_author']
-            author_name = author.get('name', '')
-            break
-    
-    content = '\n\n'.join(content_parts) if content_parts else "(无文字内容)"
-    
-    # Add author info
-    if author_name:
-        content = f"**作者**: {author_name}\n\n---\n\n{content}"
-    
-    return {
-        'title': title,
-        'content': content,
-        'images': images
-    }
 
 
 def _parse_bilibili_video(video_data, url):
     """Parse Bilibili video page and download video for transcription."""
-    # Extract video info from videoData
+    # Extract video info from videoData - handle both old and new structures
     video_info = video_data.get('videoInfo', {})
     
+    # Try to get title from multiple possible locations
     title = video_info.get('title', '')
+    if not title:
+        # Try viewInfo for new structure
+        view_info = video_data.get('viewInfo', {})
+        title = view_info.get('title', '')
+    if not title:
+        # Try p (pages) array
+        p = video_data.get('p', [])
+        if p and len(p) > 0:
+            title = p[0].get('title', '')
+    
+    # Try to get description
     description = video_info.get('desc', '')
+    if not description:
+        view_info = video_data.get('viewInfo', {})
+        description = view_info.get('desc', '')
+    
+    # Try to get bvid
     bvid = video_info.get('bvid', '')
+    if not bvid:
+        view_info = video_data.get('viewInfo', {})
+        bvid = view_info.get('bvid', '')
+    if not bvid:
+        # Extract from URL
+        bvid_match = re.search(r'BV\w+', url)
+        if bvid_match:
+            bvid = bvid_match.group(0)
     
     # Extract owner info
+    author_name = ""
     owner = video_info.get('owner', {})
-    author_name = owner.get('name', '')
+    if owner:
+        author_name = owner.get('name', '')
+    if not author_name:
+        up_info = video_data.get('upInfo', {})
+        if up_info:
+            author_name = up_info.get('name', '')
     
     # Build content
     content_parts = []
@@ -1079,6 +867,8 @@ def _parse_bilibili_video(video_data, url):
     
     # Extract tags
     tags = video_info.get('tag', [])
+    if not tags:
+        tags = video_data.get('tags', [])
     if tags:
         tag_names = [t.get('tag_name', '') for t in tags if t.get('tag_name')]
         if tag_names:
@@ -1094,6 +884,9 @@ def _parse_bilibili_video(video_data, url):
     # Extract cover image
     images = []
     cover_url = video_info.get('pic', '')
+    if not cover_url:
+        view_info = video_data.get('viewInfo', {})
+        cover_url = view_info.get('pic', '')
     if cover_url:
         if cover_url.startswith('//'):
             cover_url = 'https:' + cover_url
@@ -1285,256 +1078,219 @@ def transcribe_with_openrouter(audio_path, api_key, model):
     with open(audio_path, 'rb') as f:
         audio_data = f.read()
     
+    # Check file size - OpenRouter has limits
+    file_size_mb = len(audio_data) / (1024 * 1024)
+    print(f"  📊 Audio file size: {file_size_mb:.1f} MB", file=sys.stderr)
+    
+    # If file is too large, compress it
+    if file_size_mb > 20:
+        print(f"  ⚠️ File too large, compressing...", file=sys.stderr)
+        compressed_path = audio_path.parent / f"{audio_path.stem}_compressed.mp3"
+        result = subprocess.run([
+            'ffmpeg', '-i', str(audio_path),
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '16000', '-ac', '1',
+            '-b:a', '32k',  # Lower bitrate for smaller file
+            str(compressed_path), '-y'
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode == 0:
+            with open(compressed_path, 'rb') as f:
+                audio_data = f.read()
+            file_size_mb = len(audio_data) / (1024 * 1024)
+            print(f"  📊 Compressed size: {file_size_mb:.1f} MB", file=sys.stderr)
+            compressed_path.unlink(missing_ok=True)
+    
     audio_base64 = base64.b64encode(audio_data).decode('utf-8')
     
-    # Build API request
+    # Build API request - use proper audio format
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Transcribe this audio to text. Output only the transcription, no additional commentary."
-                    },
-                    {
-                        "type": "audio_url",
-                        "audio_url": {
-                            "url": f"data:audio/mp3;base64,{audio_base64}"
+    # Try different prompt formats for better Chinese transcription
+    prompts = [
+        "请将此音频转录为中文文本。只输出转录内容，不要添加任何额外评论。",
+        "Transcribe this audio to Chinese text. Output only the transcription.",
+        "请将这段语音转换为文字。",
+    ]
+    
+    for prompt in prompts:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": audio_base64,
+                                "format": "mp3"
+                            }
                         }
-                    }
-                ]
-            }
-        ]
-    }
-    
-    req = urllib.request.Request(
-        api_url,
-        data=json.dumps(payload).encode('utf-8'),
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}',
-            'HTTP-Referer': 'https://openclaw.local',
-            'X-Title': 'Web Clipper Audio Transcription'
-        },
-        method='POST'
-    )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=120) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            
-            if 'choices' in result and len(result['choices']) > 0:
-                text = result['choices'][0].get('message', {}).get('content', '')
-                return text.strip()
-            elif 'error' in result:
-                print(f"  ❌ API Error: {result['error']}", file=sys.stderr)
-                return None
-            else:
-                print(f"  ⚠️ Unexpected response: {result}", file=sys.stderr)
-                return None
-    
-    except urllib.error.HTTPError as e:
-        print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
+                    ]
+                }
+            ]
+        }
+        
+        req = urllib.request.Request(
+            api_url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}',
+                'HTTP-Referer': 'https://openclaw.local',
+                'X-Title': 'Web Clipper Audio Transcription'
+            },
+            method='POST'
+        )
+        
         try:
-            error_body = e.read().decode('utf-8', errors='replace')
-            print(f"     Response: {error_body[:500]}", file=sys.stderr)
-        except:
-            pass
-        return None
-    except Exception as e:
-        print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
-        return None
-class ArticleExtractor(HTMLParser):
-    """Extract article title, content, and images from generic HTML."""
-    
-    def __init__(self, base_url=""):
-        super().__init__()
-        self.base_url = base_url
-        self.in_title = False
-        self.in_body = False
-        self.in_skip = 0
-        self.body_depth = 0
+            with urllib.request.urlopen(req, timeout=180) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                
+                if 'choices' in result and len(result['choices']) > 0:
+                    text = result['choices'][0].get('message', {}).get('content', '')
+                    text = text.strip()
+                    if text and text != "Sure, please play the audio." and len(text) > 50:
+                        print(f"  ✅ Transcription successful ({len(text)} chars)", file=sys.stderr)
+                        return text
+                    else:
+                        print(f"  ⚠️ Poor transcription, trying next prompt...", file=sys.stderr)
+                elif 'error' in result:
+                    print(f"  ❌ API Error: {result['error']}", file=sys.stderr)
+                    return None
         
-        self.title = ""
-        self.body_parts = []
-        self.all_text = []
-        self.images = []
-        
-        # Tags to skip
-        self.skip_tags = {
-            'script', 'style', 'nav', 'header', 'footer', 
-            'aside', 'noscript', 'iframe', 'svg', 'canvas',
-            'form', 'input', 'button', 'select', 'textarea', 'label'
-        }
-        
-        # Content indicators
-        self.content_classes = {
-            'content', 'article', 'main', 'post', 'entry', 
-            'post-content', 'article-content', 'entry-content',
-            'story', 'story-body', 'article-body', 'rich-text',
-            'article__content', 'content-body', 'livenews',
-            'live-news', 'news-content', 'detail-content',
-            'text-content', 'main-content', 'page-content',
-            'article-detail', 'article_text', 'article-text',
-            'article__body', 'article-body__content',
-            'article__main__content', 'wangEditor-txt',
-            'articleWidth-content', 'normal-article',
-            'editor-content', 'ql-editor', 'trix-content',
-            'post__content', 'entry__content'
-        }
-        self.content_ids = {
-            'content', 'article', 'main', 'post', 'entry',
-            'livenews', 'live-news', 'news-content', 'detail',
-            'article-detail', 'articleContent', 'article-body',
-            'article-content', 'post-content'
-        }
-        
-        # Tags that indicate sidebar/related content (to exclude)
-        self.sidebar_classes = {
-            'sidebar', 'related', 'recommended', 'popular',
-            'trending', 'more', 'read-more', 'see-also',
-            'widget', 'aside-content', 'extra', 'supplement'
-        }
-        self.sidebar_ids = {
-            'sidebar', 'related', 'recommended', 'popular',
-            'trending', 'more', 'read-more'
-        }
-    
-    def _get_attr(self, attrs, name):
-        for k, v in attrs:
-            if k == name:
-                return v
-        return ""
-    
-    def _resolve_url(self, url):
-        if not url or url.startswith('data:'):
+        except urllib.error.HTTPError as e:
+            print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
+            try:
+                error_body = e.read().decode('utf-8', errors='replace')
+                print(f"     Response: {error_body[:500]}", file=sys.stderr)
+            except:
+                pass
             return None
-        if url.startswith('http://') or url.startswith('https://'):
-            return url
-        if url.startswith('//'):
-            return 'https:' + url
-        if self.base_url:
-            return urllib.parse.urljoin(self.base_url, url)
+        except Exception as e:
+            print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
+            return None
+    
+    return None
+
+
+def _parse_bilibili_opus(opus_data, url):
+    """Parse Bilibili opus (图文动态) format."""
+    detail = opus_data.get('detail')
+    if not detail:
         return None
     
-    def _is_content_container(self, tag, attrs):
-        """Check if this element is likely a content container."""
-        cls = self._get_attr(attrs, 'class')
-        id_ = self._get_attr(attrs, 'id')
-        
-        # First check if it's a sidebar/related content (exclude these)
-        if cls:
-            classes = set(cls.split())
-            if classes & self.sidebar_classes:
-                return False
-        if id_ and id_ in self.sidebar_ids:
-            return False
-        
-        # Then check if it's a content container
-        if cls:
-            classes = set(cls.split())
-            if classes & self.content_classes:
-                return True
-        if id_ and id_ in self.content_ids:
-            return True
-        if tag in ('article', 'main'):
-            return True
-        return False
+    modules = detail.get('modules', [])
     
-    def handle_starttag(self, tag, attrs):
-        if tag in self.skip_tags:
-            self.in_skip += 1
-            return
-        
-        if self.in_skip > 0:
-            return
-        
-        if tag == 'title':
-            self.in_title = True
-        
-        # Check if this is a content container
-        is_content = self._is_content_container(tag, attrs)
-        if is_content:
-            self.in_body = True
-            self.body_depth += 1
-        elif self.in_body:
-            # If we're already in body, increment depth for structural tags
-            if tag in ('div', 'section', 'article', 'main', 'p', 'blockquote', 'pre', 'ul', 'ol', 'li'):
-                self.body_depth += 1
-        
-        # Extract images
-        if tag == 'img':
-            src = self._resolve_url(self._get_attr(attrs, 'src'))
-            if not src:
-                src = self._resolve_url(self._get_attr(attrs, 'data-src'))
-            if not src:
-                src = self._resolve_url(self._get_attr(attrs, 'data-original'))
-            if src:
-                alt = self._get_attr(attrs, 'alt')
-                self.images.append((src, alt))
+    # Extract title
+    title = ""
+    for module in modules:
+        if 'module_title' in module:
+            title = module['module_title'].get('text', '')
+            break
     
-    def handle_endtag(self, tag):
-        if tag in self.skip_tags:
-            self.in_skip -= 1
-            return
-        
-        if tag == 'title':
-            self.in_title = False
-        
-        if self.in_body:
-            # Decrement depth for structural tags
-            if tag in ('div', 'section', 'article', 'main', 'p', 'blockquote', 'pre', 'ul', 'ol', 'li'):
-                self.body_depth -= 1
-                if self.body_depth <= 0:
-                    self.in_body = False
-                    self.body_depth = 0
+    # Fallback: use basic title
+    if not title:
+        basic = detail.get('basic', {})
+        title = basic.get('title', 'Bilibili动态')
     
-    def handle_data(self, data):
-        if self.in_skip > 0:
-            return
-        
-        text = data.strip()
-        if not text:
-            return
-        
-        if self.in_title:
-            self.title += text
-        
-        self.all_text.append(text)
-        
-        if self.in_body:
-            self.body_parts.append(text)
+    # Extract content
+    content_parts = []
+    images = []
     
-    def get_result(self):
-        title = self.title or "Untitled"
+    for module in modules:
+        # Extract images from module_top (album/cover images)
+        if 'module_top' in module:
+            top = module['module_top']
+            display = top.get('display', {})
+            album = display.get('album', {})
+            pics = album.get('pics', [])
+            for pic in pics:
+                pic_url = pic.get('url', '')
+                if pic_url:
+                    if pic_url.startswith('//'):
+                        pic_url = 'https:' + pic_url
+                    elif pic_url.startswith('http://'):
+                        pic_url = 'https://' + pic_url[7:]
+                    images.append((pic_url, ''))
+                    content_parts.append(f'\n![image]({pic_url})\n')
         
-        # Try to find better title
-        if title in ("", "Untitled"):
-            for text in self.all_text[:30]:
-                if len(text) > 10:
-                    if len(text) < 100 and not text.startswith('http'):
-                        title = text
-                        break
-        
-        # Use body parts if available, otherwise all text
-        if self.body_parts and len(' '.join(self.body_parts)) > 200:
-            content = '\n'.join(self.body_parts)
-        else:
-            # Fallback: use all text, filtering out short fragments
-            meaningful = [t for t in self.all_text if len(t) > 3]
-            content = '\n'.join(meaningful)
-        
-        return {
-            'title': title,
-            'content': content,
-            'images': self.images
-        }
+        # Extract content text and inline images
+        if 'module_content' in module:
+            content = module['module_content']
+            paragraphs = content.get('paragraphs', [])
+            
+            for para in paragraphs:
+                text_nodes = para.get('text', {}).get('nodes', [])
+                para_text = []
+                
+                for node in text_nodes:
+                    node_type = node.get('type', '')
+                    
+                    if node_type == 'TEXT_NODE_TYPE_WORD':
+                        word = node.get('word', {})
+                        text = word.get('words', '')
+                        if text:
+                            para_text.append(text)
+                    
+                    elif node_type == 'TEXT_NODE_TYPE_RICH':
+                        rich = node.get('rich', {})
+                        text = rich.get('text', '')
+                        if text:
+                            para_text.append(text)
+                    
+                    elif node_type == 'TEXT_NODE_TYPE_PIC':
+                        pic = node.get('pic', {})
+                        pic_url = pic.get('url', '')
+                        if pic_url:
+                            if pic_url.startswith('//'):
+                                pic_url = 'https:' + pic_url
+                            elif pic_url.startswith('http://'):
+                                pic_url = 'https://' + pic_url[7:]
+                            images.append((pic_url, ''))
+                            para_text.append(f'\n![image]({pic_url})\n')
+                        # Also check for pics array
+                        pics = pic.get('pics', [])
+                        for p in pics:
+                            url = p.get('url', '')
+                            if url:
+                                if url.startswith('//'):
+                                    url = 'https:' + url
+                                elif url.startswith('http://'):
+                                    url = 'https://' + url[7:]
+                                images.append((url, ''))
+                                para_text.append(f'\n![image]({url})\n')
+                
+                if para_text:
+                    content_parts.append(''.join(para_text))
+    
+    # Extract author info
+    author_name = ""
+    for module in modules:
+        if 'module_author' in module:
+            author = module['module_author']
+            author_name = author.get('name', '')
+            break
+    
+    content = '\n\n'.join(content_parts) if content_parts else "(无文字内容)"
+    
+    # Add author info
+    if author_name:
+        content = f"**作者**: {author_name}\n\n---\n\n{content}"
+    
+    return {
+        'title': title,
+        'content': content,
+        'images': images
+    }
 
 
+# ========== Bilibili Parser ==========
 # ========== Playwright Fallback ==========
 def fetch_with_playwright(url):
     """Use Playwright to fetch JS-rendered page content."""
@@ -1946,13 +1702,23 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
         check_parser_health(parser_used, result)
         
         # If parser failed, try to diagnose and fallback to generic
-        if result is None or not result.get('title') or not result.get('content') or len(result.get('content', '')) < 100:
+        # For video pages, content might be short but still valid
+        is_video_page = result and (result.get('video_url') or 'bilibili.com/video' in final_url)
+        content_too_short = not result or not result.get('content') or len(result.get('content', '')) < 100
+        
+        if content_too_short and not is_video_page:
             print(f"⚠️ Site-specific parser failed, falling back to generic parser", file=sys.stderr)
             diagnosis = diagnose_failure(final_url, html, result)
             if diagnosis['suggestions']:
                 print(f"💡 Suggestions:", file=sys.stderr)
                 for suggestion in diagnosis['suggestions']:
                     print(f"   - {suggestion}", file=sys.stderr)
+            result = None  # Force fallback
+        elif is_video_page and result and result.get('title'):
+            # Video page with title is considered success even if content is short
+            print(f"✅ Video page parsed successfully", file=sys.stderr)
+        elif not result or not result.get('title'):
+            print(f"⚠️ Site-specific parser failed, falling back to generic parser", file=sys.stderr)
             result = None  # Force fallback
     
     # If site-specific parser fails or not found, try generic parsing
