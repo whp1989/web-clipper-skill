@@ -1855,10 +1855,82 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     md_path = save_dir / f"{base_name}.md"
     # img_dir no longer needed since we don't download images
     
-    # Download images - DISABLED by default, only keep URLs in markdown
-    # User can request image download separately when needed
+    # Download images - For SSPAI, we need to download images locally due to hotlink protection
+    # Other sites can use URL references
     downloaded_images = []
-    if images:
+    local_images = {}  # Map original URL to local path
+    
+    is_sspai = 'sspai.com' in domain
+    
+    # For SSPAI, extract images from content HTML directly
+    if is_sspai and content:
+        # Find all image URLs in content
+        img_urls = re.findall(r'src="(https://cdnfile\.sspai\.com/[^"]+)"', content)
+        img_urls += re.findall(r'data-src="(https://cdnfile\.sspai\.com/[^"]+)"', content)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_urls = []
+        for url in img_urls:
+            if url not in seen:
+                seen.add(url)
+                unique_urls.append(url)
+        
+        print(f"  🖼️ Found {len(unique_urls)} images in SSPAI content", file=sys.stderr)
+        
+        for i, img_url in enumerate(unique_urls):
+            try:
+                # Create images directory
+                img_dir = save_dir / f"{base_name}_images"
+                img_dir.mkdir(exist_ok=True)
+                
+                # Extract filename from URL
+                # URL format: https://cdnfile.sspai.com/2026/02/09/filename.jpg?params
+                # We need to extract the actual filename from the path
+                from urllib.parse import urlparse
+                parsed = urlparse(img_url)
+                path_parts = parsed.path.split('/')
+                img_filename = path_parts[-1] if path_parts else ''
+                
+                if not img_filename or '.' not in img_filename:
+                    img_filename = f"image_{i+1}.jpg"
+                
+                local_path = img_dir / img_filename
+                
+                # Skip if already exists
+                if local_path.exists():
+                    rel_path = f"{base_name}_images/{img_filename}"
+                    downloaded_images.append((rel_path, '', img_url))
+                    local_images[img_url] = rel_path
+                    print(f"  🖼️ Image {i+1}/{len(unique_urls)}: Already exists {rel_path}", file=sys.stderr)
+                    continue
+                
+                # Download with proper Referer header
+                headers = {
+                    'User-Agent': USER_AGENT,
+                    'Referer': 'https://sspai.com/'
+                }
+                req = urllib.request.Request(img_url, headers=headers)
+                
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    img_data = response.read()
+                    if len(img_data) > 100:  # Skip tiny images
+                        local_path.write_bytes(img_data)
+                        # Use relative path in markdown
+                        rel_path = f"{base_name}_images/{img_filename}"
+                        downloaded_images.append((rel_path, '', img_url))
+                        local_images[img_url] = rel_path
+                        print(f"  🖼️ Image {i+1}/{len(unique_urls)}: Downloaded to {rel_path}", file=sys.stderr)
+                    else:
+                        downloaded_images.append((img_url, '', img_url))
+                        print(f"  🖼️ Image {i+1}/{len(unique_urls)}: Too small, using URL", file=sys.stderr)
+            
+            except Exception as e:
+                print(f"  ⚠️ Image {i+1}/{len(unique_urls)} download failed: {e}", file=sys.stderr)
+                downloaded_images.append((img_url, '', img_url))
+    
+    # For other sites, use images list from parser
+    elif images:
         for i, img_info in enumerate(images):
             if isinstance(img_info, dict):
                 img_url = img_info.get('url', img_info.get('src', ''))
@@ -1878,6 +1950,11 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
         md_content = html_to_markdown(content)
     else:
         md_content = "(No content extracted)"
+    
+    # Replace image URLs in content with local paths for SSPAI
+    if is_sspai and local_images:
+        for original_url, local_path in local_images.items():
+            md_content = md_content.replace(original_url, local_path)
     
     # Clean up SSPAI-specific markdown artifacts
     # Remove share buttons, QR codes, and footer elements that survived HTML parsing
