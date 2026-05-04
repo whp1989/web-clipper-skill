@@ -1653,13 +1653,12 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     
     base_name = sanitize_filename(title)
     md_path = save_dir / f"{base_name}.md"
-    img_dir = save_dir / f"{base_name}_images"
+    # img_dir no longer needed since we don't download images
     
-    # Download images
+    # Download images - DISABLED by default, only keep URLs in markdown
+    # User can request image download separately when needed
     downloaded_images = []
     if images:
-        img_dir.mkdir(exist_ok=True)
-        
         for i, img_info in enumerate(images):
             if isinstance(img_info, dict):
                 img_url = img_info.get('url', img_info.get('src', ''))
@@ -1669,21 +1668,10 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
             
             if not img_url:
                 continue
-                
-            ext = Path(urllib.parse.urlparse(img_url).path).suffix or '.jpg'
-            if ext not in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'):
-                ext = '.jpg'
             
-            local_name = f"img_{i:03d}{ext}"
-            local_path = img_dir / local_name
-            
-            print(f"  📥 Image {i+1}/{len(images)}: {img_url[:60]}...", file=sys.stderr)
-            
-            if download_image(img_url, local_path):
-                downloaded_images.append((img_url, alt, local_name))
-                print(f"    ✅ {local_name}", file=sys.stderr)
-            else:
-                print(f"    ❌ Failed", file=sys.stderr)
+            # Just record the URL, don't download
+            downloaded_images.append((img_url, alt, img_url))
+            print(f"  🖼️ Image {i+1}/{len(images)}: {img_url[:60]}... (URL only)", file=sys.stderr)
     
     # Convert content to Markdown
     if content:
@@ -1691,14 +1679,13 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     else:
         md_content = "(No content extracted)"
     
-    # Build image references
+    # Build image references - use original URLs, no local download
     image_refs = ""
     if downloaded_images:
         image_refs = "\n\n## Images\n\n"
-        for img_url, alt, local_name in downloaded_images:
-            rel_path = f"{img_dir.name}/{local_name}"
+        for img_url, alt, _ in downloaded_images:
             alt_text = alt or "image"
-            image_refs += f"![{alt_text}]({rel_path})\n\n"
+            image_refs += f"![{alt_text}]({img_url})\n\n"
     
     # Build final Markdown
     markdown = f"""---
