@@ -102,7 +102,7 @@ def diagnose_failure(url, html, result, error=None):
             if container.startswith('.'):
                 pattern = f'class="[^"]*{container[1:]}[^"]*"'
             else:
-                pattern = f'<{container}[\s>]'
+                pattern = f'<{container}[\\s>]'
             if re.search(pattern, html, re.IGNORECASE):
                 found.append(container)
         if found:
@@ -284,7 +284,7 @@ def parse_xiaoyuzhou(html, url):
 # ========== Wall Street CN Parser ==========
 @register_parser("wallstreetcn.com")
 def parse_wallstreetcn(html, url):
-    """Parse Wall Street CN articles."""
+    """Parse Wall Street CN articles and live news."""
     # Extract article ID from URL
     article_id = None
     id_match = re.search(r'/(?:articles|livenews)/(\d+)', url)
@@ -302,44 +302,253 @@ def parse_wallstreetcn(html, url):
     if pos < 0:
         return None
     
-    # Find the article object
+    # Find the article object or live_news object
     article_start = html.find('"article":{', pos)
     if article_start < 0:
+        # Try livenews format (different structure)
+        article_start = html.find('"live_news":{', pos)
+        if article_start < 0:
+            article_start = html.find('"livenews":{', pos)
+    
+    # If no nested object found, the data might be at the top level
+    # Look for content or title directly after the ID
+    if article_start < 0:
+        # Try to find content or title field directly
+        content_start = html.find('"content":', pos)
+        title_start = html.find('"title":', pos)
+        
+        if content_start > 0 or title_start > 0:
+            # This is a flat structure (livenews)
+            # The data might be in an array element or in the top level object
+            # We need to find the object that contains both "id" and "title"
+            # Search backwards from pos to find the correct opening brace
+            brace_start = -1
+            search_limit = max(0, pos - 3000)
+            
+            for i in range(pos - 1, search_limit, -1):
+                if html[i] == '{':
+                    # Check if this brace is followed by "id" or "title" within reasonable distance
+                    snippet = html[i:min(len(html), i+200)]
+                    if '"id":' in snippet or '"title":' in snippet:
+                        brace_start = i
+                        break
+            
+            if brace_start > 0:
+                article_json = extract_json_object(html, brace_start)
+                if article_json:
+                    try:
+                        article_data = json.loads(article_json)
+                    except json.JSONDecodeError as e:
+                        print(f"  JSON decode error: {e}", file=sys.stderr)
+                        return parse_wallstreetcn_legacy(html, url, pos, pos)
+                else:
+                    return parse_wallstreetcn_legacy(html, url, pos, pos)
+            else:
+                return parse_wallstreetcn_legacy(html, url, pos, pos)
+        else:
+            return None
+    else:
+        # Extract article JSON - find matching braces
+        # Determine the field name
+        if html[article_start:article_start+12] == '"live_news":{':
+            field_len = len('"live_news":')
+        elif html[article_start:article_start+11] == '"livenews":{':
+            field_len = len('"livenews":')
+        else:
+            field_len = len('"article":')
+        
+        article_json = extract_json_object(html, article_start + field_len - 1)
+        if not article_json:
+            # Fallback: use old method
+            return parse_wallstreetcn_legacy(html, url, pos, article_start)
+        
+        try:
+            article_data = json.loads(article_json)
+        except json.JSONDecodeError as e:
+            print(f"  JSON decode error: {e}", file=sys.stderr)
+            return parse_wallstreetcn_legacy(html, url, pos, article_start)
+    
+    # Extract title
+    title = article_data.get('title', '')
+    if not title:
+        title = article_data.get('content_title', '')
+    
+    # Clean title
+    title = title.replace('\\"', '"').strip()
+    
+    # Extract content
+    content = article_data.get('content', '')
+    if not content:
+        content = article_data.get('content_text', '')
+    if not content:
+        content = article_data.get('text', '')
+    
+    # For livenews, the content might be HTML
+    if content and content.startswith('<'):
+        # It's HTML content, keep it as is for html_to_markdown to process
+        pass
+    
+    # Unescape content
+    if content:
+        content = content.replace('\\n', '\n').replace('\\t', '\t')
+        content = content.replace('\\u003C', '<').replace('\\u003c', '<')
+        content = content.replace('\\u003E', '>').replace('\\u003e', '>')
+        content = content.replace('\\/', '/')
+        content = content.replace('\\"', '"')
+        content = content.replace("\\'", "'")
+    
+    # Extract images from multiple possible fields
+    images = []
+    seen_urls = set()
+    
+    # 2. Check images array
+    image_list = article_data.get('images', [])
+    if isinstance(image_list, list):
+        for img in image_list:
+            if isinstance(img, dict):
+                img_url = img.get('url') or img.get('src') or img.get('uri')
+            elif isinstance(img, str):
+                img_url = img
+            else:
+                img_url = None
+            
+            if img_url and img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append((img_url, ''))
+    
+    # 3. Check single image field (could be dict or string)
+    single_image = article_data.get('image')
+    if single_image:
+        if isinstance(single_image, dict):
+            img_url = single_image.get('url') or single_image.get('src') or single_image.get('uri')
+        elif isinstance(single_image, str):
+            img_url = single_image
+        else:
+            img_url = None
+        
+        if img_url and img_url not in seen_urls:
+            seen_urls.add(img_url)
+            images.append((img_url, ''))
+    
+    # 3. Check cover_image
+    cover = article_data.get('cover_image')
+    if cover and isinstance(cover, dict):
+        cover_url = cover.get('url') or cover.get('uri') or cover.get('src')
+        if cover_url and cover_url not in seen_urls:
+            seen_urls.add(cover_url)
+            images.append((cover_url, '封面'))
+    elif cover and isinstance(cover, str) and cover not in seen_urls:
+        seen_urls.add(cover)
+        images.append((cover, '封面'))
+    
+    # 4. Extract images from content HTML
+    if content:
+        content_images = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content)
+        for img_url in content_images:
+            if img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append((img_url, ''))
+    
+    # 5. For livenews, check live_news_images field
+    live_images = article_data.get('live_news_images', [])
+    if isinstance(live_images, list):
+        for img in live_images:
+            if isinstance(img, dict):
+                img_url = img.get('url') or img.get('src') or img.get('uri')
+            elif isinstance(img, str):
+                img_url = img
+            else:
+                img_url = None
+            
+            if img_url and img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append((img_url, ''))
+    
+    # 6. Check for image in JSON-LD or meta
+    if not images:
+        # Try to find image in the full HTML
+        og_image = extract_meta_content(html, 'og:image')
+        if og_image and og_image not in seen_urls:
+            seen_urls.add(og_image)
+            images.append((og_image, ''))
+    
+    if not content:
         return None
     
+    return {
+        'title': title,
+        'content': content,
+        'images': images
+    }
+
+
+def extract_json_object(html, start_pos):
+    """Extract a JSON object from HTML starting at given position."""
+    # Find opening brace
+    brace_start = html.find('{', start_pos)
+    if brace_start < 0:
+        return None
+    
+    # Track brace depth
+    depth = 1
+    in_string = False
+    escape_next = False
+    
+    i = brace_start + 1
+    while i < len(html) and depth > 0:
+        char = html[i]
+        
+        if escape_next:
+            escape_next = False
+        elif char == '\\':
+            escape_next = True
+        elif char == '"' and not in_string:
+            in_string = True
+        elif char == '"' and in_string:
+            in_string = False
+        elif not in_string:
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+        
+        i += 1
+    
+    if depth == 0:
+        return html[brace_start:i]
+    
+    return None
+
+
+def parse_wallstreetcn_legacy(html, url, pos, article_start):
+    """Legacy parser for Wall Street CN (fallback)."""
     # Extract title from article object
-    # Find all title matches and pick the right one (skip audio title)
     article_html = html[article_start:article_start+10000]
     titles = list(re.finditer(r'"title"\s*:\s*"([^"]*)"', article_html, re.DOTALL))
     
     title = ""
     for m in titles:
         context = article_html[max(0, m.start()-50):m.start()]
-        # Skip audio title
         if 'audio' in context:
             continue
-        # Prefer title before tags or themes
         after = article_html[m.end():m.end()+100]
         if 'tags' in after or 'themes' in after:
             if m.group(1).strip():
                 title = m.group(1).replace('\\"', '"')
                 break
     
-    # Fallback: use last non-empty title
     if not title:
         for m in reversed(titles):
             if m.group(1).strip():
                 title = m.group(1).replace('\\"', '"')
                 break
     
-    # Extract content - find the content block after article ID
+    # Extract content
     content = ""
     content_start = html.find('"content":', pos)
     if content_start > 0:
-        # Find opening quote
         quote_start = html.find('"', content_start + len('"content":'))
         if quote_start > 0:
-            # Scan to find closing quote, handling escaped quotes
             i = quote_start + 1
             while i < len(html):
                 if html[i] == '\\' and i + 1 < len(html) and html[i + 1] == '"':
@@ -351,7 +560,6 @@ def parse_wallstreetcn(html, url):
             
             if i < len(html):
                 content = html[quote_start + 1:i]
-                # Unescape
                 content = content.replace('\\n', '\n').replace('\\t', '\t')
                 content = content.replace('\\u003C', '<').replace('\\u003c', '<')
                 content = content.replace('\\u003E', '>').replace('\\u003e', '>')
@@ -365,7 +573,7 @@ def parse_wallstreetcn(html, url):
     return {
         'title': title,
         'content': content,
-        'images': []  # Wall Street CN images are in separate fields
+        'images': []
     }
 
 
@@ -1391,6 +1599,25 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     images = result.get('images', [])
     audio_url = result.get('audio_url')
     audio_file = result.get('audio_file')
+    
+    # Add source prefix to title
+    SOURCE_PREFIXES = {
+        'wallstreetcn.com': '见闻',
+        'mp.weixin.qq.com': '微信',
+        'sspai.com': '少数派',
+        'bilibili.com': 'B站',
+        'xiaoyuzhoufm.com': '小宇宙',
+    }
+    
+    domain = get_domain(final_url)
+    source_prefix = None
+    for site_domain, prefix in SOURCE_PREFIXES.items():
+        if site_domain in domain or domain in site_domain:
+            source_prefix = prefix
+            break
+    
+    if source_prefix and not title.startswith(f'[{source_prefix}]'):
+        title = f'[{source_prefix}] {title}'
     
     print(f"📄 Title: {title}", file=sys.stderr)
     print(f"📄 Content length: {len(content)}", file=sys.stderr)
