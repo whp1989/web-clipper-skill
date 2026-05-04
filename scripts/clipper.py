@@ -749,8 +749,12 @@ def parse_wechat(html, url):
         content = re.sub(r'使用完整服务', '', content)
         content = re.sub(r'轻点两下取消[^<]*', '', content)
         
-        # Replace data-src with src for images
+        # Replace data-src with src for images - keep images in content
         content = re.sub(r'data-src="', 'src="', content)
+        
+        # Clean up empty/weird tags that might remain
+        content = re.sub(r'<span[^>]*>\s*</span>', '', content)
+        content = re.sub(r'<p[^>]*>\s*</p>', '', content)
     
     # Build clean content
     content_parts = []
@@ -761,10 +765,11 @@ def parse_wechat(html, url):
     
     full_content = '\n\n---\n\n'.join(content_parts) if content_parts else "(无内容)"
     
+    # Return with empty images list since images are now in content
     return {
         'title': title,
         'content': full_content,
-        'images': images
+        'images': []  # Images are embedded in content HTML, will be converted by html_to_markdown
     }
 
 
@@ -1471,6 +1476,21 @@ def html_to_markdown(html_content):
     text = re.sub(r'<code[^>]*>(.*?)</code>', r'`\1`', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<pre[^>]*>(.*?)</pre>', r'```\n\1\n```\n\n', text, flags=re.DOTALL | re.IGNORECASE)
     
+    # Images - convert to markdown with original URLs
+    def img_repl(m):
+        src = m.group(1)
+        alt = m.group(2) or 'image'
+        # Clean up src if it's a WeChat data-src that was converted
+        if src.startswith('//'):
+            src = 'https:' + src
+        return f'\n\n![{alt}]({src})\n\n'
+    
+    # Match img tags with src or data-src
+    text = re.sub(r'<img[^>]*src=["\']([^"\']+)["\'][^>]*alt=["\']([^"\']*)["\'][^>]*/?>', img_repl, text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<img[^>]*alt=["\']([^"\']*)["\'][^>]*src=["\']([^"\']+)["\'][^>]*/?>', lambda m: f'\n\n![{m.group(1)}]({m.group(2)})\n\n', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<img[^>]*src=["\']([^"\']+)["\'][^>]*/?>', lambda m: f'\n\n![image]({m.group(1)})\n\n', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<img[^>]*data-src=["\']([^"\']+)["\'][^>]*/?>', lambda m: f'\n\n![image]({m.group(1)})\n\n', text, flags=re.DOTALL | re.IGNORECASE)
+    
     # Links
     text = re.sub(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.DOTALL | re.IGNORECASE)
     
@@ -1679,7 +1699,7 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     else:
         md_content = "(No content extracted)"
     
-    # Build image references - use original URLs, no local download
+    # Build image references - only for images not in content
     image_refs = ""
     if downloaded_images:
         image_refs = "\n\n## Images\n\n"
