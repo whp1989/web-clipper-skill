@@ -812,32 +812,17 @@ def _parse_bilibili_video(video_data, url):
     """Parse Bilibili video page and download video for transcription."""
     # Extract video info from videoData - handle both old and new structures
     video_info = video_data.get('videoInfo', {})
+    view_info = video_data.get('viewInfo', {})
     
     # Try to get title from multiple possible locations
-    title = video_info.get('title', '')
-    if not title:
-        # Try viewInfo for new structure
-        view_info = video_data.get('viewInfo', {})
-        title = view_info.get('title', '')
-    if not title:
-        # Try p (pages) array
-        p = video_data.get('p', [])
-        if p and len(p) > 0:
-            title = p[0].get('title', '')
+    title = video_info.get('title', '') or view_info.get('title', '')
     
     # Try to get description
-    description = video_info.get('desc', '')
-    if not description:
-        view_info = video_data.get('viewInfo', {})
-        description = view_info.get('desc', '')
+    description = video_info.get('desc', '') or view_info.get('desc', '')
     
     # Try to get bvid
-    bvid = video_info.get('bvid', '')
+    bvid = video_info.get('bvid', '') or view_info.get('bvid', '')
     if not bvid:
-        view_info = video_data.get('viewInfo', {})
-        bvid = view_info.get('bvid', '')
-    if not bvid:
-        # Extract from URL
         bvid_match = re.search(r'BV\w+', url)
         if bvid_match:
             bvid = bvid_match.group(0)
@@ -845,34 +830,22 @@ def _parse_bilibili_video(video_data, url):
     # Extract owner info
     author_name = ""
     owner = video_info.get('owner', {})
-    if owner:
-        author_name = owner.get('name', '')
-    if not author_name:
+    if not owner:
         up_info = video_data.get('upInfo', {})
         if up_info:
-            author_name = up_info.get('name', '')
+            owner = up_info
+    author_name = owner.get('name', '')
     
-    # Build content
+    # Build clean content - only essential info
     content_parts = []
     
     if description:
         content_parts.append(description)
     
-    # Add video link
+    # Add video metadata (minimal)
     content_parts.append(f"\n**视频链接**: {url}")
-    content_parts.append(f"**BV号**: {bvid}")
-    
     if author_name:
         content_parts.append(f"**UP主**: {author_name}")
-    
-    # Extract tags
-    tags = video_info.get('tag', [])
-    if not tags:
-        tags = video_data.get('tags', [])
-    if tags:
-        tag_names = [t.get('tag_name', '') for t in tags if t.get('tag_name')]
-        if tag_names:
-            content_parts.append(f"**标签**: {', '.join(tag_names)}")
     
     content = '\n\n'.join(content_parts)
     
@@ -881,12 +854,9 @@ def _parse_bilibili_video(video_data, url):
     if transcription:
         content += f"\n\n---\n\n**视频转录**:\n\n{transcription}"
     
-    # Extract cover image
+    # Extract cover image (only one)
     images = []
-    cover_url = video_info.get('pic', '')
-    if not cover_url:
-        view_info = video_data.get('viewInfo', {})
-        cover_url = view_info.get('pic', '')
+    cover_url = video_info.get('pic', '') or view_info.get('pic', '')
     if cover_url:
         if cover_url.startswith('//'):
             cover_url = 'https:' + cover_url
@@ -1106,75 +1076,71 @@ def transcribe_with_openrouter(audio_path, api_key, model):
     # Build API request - use proper audio format
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     
-    # Try different prompt formats for better Chinese transcription
-    prompts = [
-        "请将此音频转录为中文文本。只输出转录内容，不要添加任何额外评论。",
-        "Transcribe this audio to Chinese text. Output only the transcription.",
-        "请将这段语音转换为文字。",
-    ]
+    # Use Chinese prompt for better Chinese transcription
+    prompt = "请将此音频转录为中文文本。只输出转录内容，不要添加任何额外评论。"
     
-    for prompt in prompts:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": audio_base64,
-                                "format": "mp3"
-                            }
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": audio_base64,
+                            "format": "mp3"
                         }
-                    ]
-                }
-            ]
-        }
-        
-        req = urllib.request.Request(
-            api_url,
-            data=json.dumps(payload).encode('utf-8'),
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {api_key}',
-                'HTTP-Referer': 'https://openclaw.local',
-                'X-Title': 'Web Clipper Audio Transcription'
-            },
-            method='POST'
-        )
-        
-        try:
-            with urllib.request.urlopen(req, timeout=180) as response:
-                result = json.loads(response.read().decode('utf-8'))
-                
-                if 'choices' in result and len(result['choices']) > 0:
-                    text = result['choices'][0].get('message', {}).get('content', '')
-                    text = text.strip()
-                    if text and text != "Sure, please play the audio." and len(text) > 50:
-                        print(f"  ✅ Transcription successful ({len(text)} chars)", file=sys.stderr)
-                        return text
-                    else:
-                        print(f"  ⚠️ Poor transcription, trying next prompt...", file=sys.stderr)
-                elif 'error' in result:
-                    print(f"  ❌ API Error: {result['error']}", file=sys.stderr)
+                    }
+                ]
+            }
+        ]
+    }
+    
+    req = urllib.request.Request(
+        api_url,
+        data=json.dumps(payload).encode('utf-8'),
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}',
+            'HTTP-Referer': 'https://openclaw.local',
+            'X-Title': 'Web Clipper Audio Transcription'
+        },
+        method='POST'
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=180) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            
+            if 'choices' in result and len(result['choices']) > 0:
+                text = result['choices'][0].get('message', {}).get('content', '')
+                text = text.strip()
+                if text and len(text) > 10:
+                    print(f"  ✅ Transcription successful ({len(text)} chars)", file=sys.stderr)
+                    return text
+                else:
+                    print(f"  ⚠️ Transcription too short: '{text}'", file=sys.stderr)
                     return None
-        
-        except urllib.error.HTTPError as e:
-            print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
-            try:
-                error_body = e.read().decode('utf-8', errors='replace')
-                print(f"     Response: {error_body[:500]}", file=sys.stderr)
-            except:
-                pass
-            return None
-        except Exception as e:
-            print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
-            return None
+            elif 'error' in result:
+                print(f"  ❌ API Error: {result['error']}", file=sys.stderr)
+                return None
+    
+    except urllib.error.HTTPError as e:
+        print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
+        try:
+            error_body = e.read().decode('utf-8', errors='replace')
+            print(f"     Response: {error_body[:500]}", file=sys.stderr)
+        except:
+            pass
+        return None
+    except Exception as e:
+        print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
+        return None
     
     return None
 
