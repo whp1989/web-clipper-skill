@@ -668,6 +668,28 @@ def parse_sspai(html, url):
     content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
     
+    # Remove SSPAI-specific footer elements - more aggressive cleaning
+    # Remove share buttons, comments section, editor info, etc.
+    sspai_cleanup_patterns = [
+        r'<div[^>]*class="[^"]*(?:share|social|weibo|wechat|comment|editor|footer|meta|info|tag|category|author|action|toolbar|button)[^"]*"[^>]*>.*?</div>',
+        r'<a[^>]*class="[^"]*(?:share|social|weibo|wechat)[^"]*"[^>]*>.*?</a>',
+        r'<span[^>]*class="[^"]*(?:share|count|num|meta)[^"]*"[^>]*>.*?</span>',
+        r'<section[^>]*class="[^"]*(?:comment|discussion|footer)[^"]*"[^>]*>.*?</section>',
+        r'\*\*\*扫码分享\*\*\*.*?$',
+        r'\*\*\*目录\s*\d+\s*\*\*\*',
+        r'\*\*\*发布发表评论\*\*\*',
+        r'\*\*\*举报本文章\*\*\*',
+        r'\*\*\*\*\*\*',
+    ]
+    
+    for pattern in sspai_cleanup_patterns:
+        content = re.sub(pattern, '', content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Remove empty paragraphs and excessive whitespace
+    content = re.sub(r'<p[^>]*>\s*</p>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    content = re.sub(r'\*\s*\*\s*\*\s*\*', '', content)  # Remove stray asterisks
+    
     return {
         'title': title,
         'content': content,
@@ -1819,6 +1841,47 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     else:
         md_content = "(No content extracted)"
     
+    # Clean up SSPAI-specific markdown artifacts
+    # Remove share buttons, QR codes, and footer elements that survived HTML parsing
+    sspai_md_cleanup = [
+        r'\*\*\*扫码分享\*\*\*.*?$',
+        r'\*\*\*目录\s*\d+\s*\*\*\*',
+        r'\*\*\*发布发表评论\*\*\*',
+        r'\*\*\*举报本文章\*\*\*',
+        r'\*\*\*\*\*\*',
+        r'\*\s*\*\s*\*\s*\*\s*\*',
+        r'\*\*\*\s*\*\*\*',
+        r'\*\*\*\s*\d+\s*\*\*\*',
+        r'\*\*\*\s*发布发表评论\s*\*\*\*',
+        r'\*\*\*\s*举报本文章\s*\*\*\*',
+        r'\*\*\*\s*扫码分享\s*\*\*\*',
+        r'\*\*\*\s*目录\s*\d+\s*\*\*\*',
+        r'扫码分享.*?$',
+        r'举报本文章.*?$',
+        r'发布发表评论.*?$',
+        r'本文责编：.*?$',
+        r'\*\*\*\s*\*\*\*.*?$',
+        r'\*\s*\*\s*\*.*?$',
+        r'\*\*\*\s*\d+.*?$',
+    ]
+    
+    for pattern in sspai_md_cleanup:
+        md_content = re.sub(pattern, '', md_content, flags=re.MULTILINE | re.IGNORECASE)
+    
+    # Remove lines that are just asterisks, numbers, or empty
+    lines = md_content.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip lines that are just asterisks, numbers, or very short
+        if stripped and not re.match(r'^[\*\s\d]+$', stripped) and len(stripped) > 2:
+            cleaned_lines.append(line)
+    
+    md_content = '\n'.join(cleaned_lines)
+    
+    # Remove excessive blank lines
+    md_content = re.sub(r'\n{4,}', '\n\n\n', md_content)
+    
     # Build image references - only for images not in content
     image_refs = ""
     if downloaded_images:
@@ -1850,6 +1913,22 @@ images_count: {len(downloaded_images)}
 
 *Clipped by web-clipper*
 """
+    
+    # Post-process: clean up any remaining artifacts in final markdown
+    # Remove lines with just asterisks and numbers after markdown is built
+    final_lines = []
+    for line in markdown.split('\n'):
+        stripped = line.strip()
+        # Skip lines that are just formatting artifacts
+        if stripped and not re.match(r'^[\*\s\d]+$', stripped) and len(stripped) > 2:
+            # Skip lines with editor info, author info, etc.
+            if not re.search(r'本文责编|扫码分享|举报本文章|发布发表评论|知道分子|精神状态', stripped):
+                final_lines.append(line)
+    
+    markdown = '\n'.join(final_lines)
+    
+    # Clean up excessive blank lines again
+    markdown = re.sub(r'\n{4,}', '\n\n\n', markdown)
     
     # Save file
     md_path.write_text(markdown, encoding='utf-8')
