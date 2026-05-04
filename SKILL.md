@@ -190,7 +190,10 @@ OpenRouter API 密钥等敏感信息存储在本地配置文件：
 {
   "openrouter_api_key": "sk-or-v1-...",
   "openrouter_model": "mistralai/voxtral-small-24b-2507",
-  "audio_segment_minutes": 10
+  "audio_segment_minutes": 10,
+  "gotify_server": "https://go.pandaponds.com",
+  "gotify_token": "your-token-here",
+  "gotify_app": "LOGS"
 }
 ```
 
@@ -200,8 +203,26 @@ OpenRouter API 密钥等敏感信息存储在本地配置文件：
 | `openrouter_api_key` | OpenRouter API密钥 | 必填 |
 | `openrouter_model` | 语音转文字模型 | `mistralai/voxtral-small-24b-2507` |
 | `audio_segment_minutes` | 音频分段时长（分钟） | `10` |
+| `gotify_server` | Gotify服务器地址 | 可选 |
+| `gotify_token` | Gotify应用Token | 可选 |
+| `gotify_app` | Gotify应用名称 | 可选 |
 
 **注意：** 此配置文件包含敏感信息，请勿加入Git仓库。skill代码中通过 `load_api_config()` 函数读取此配置。
+
+## Gotify 通知
+
+剪藏完成后，skill会自动发送Gotify通知（如果已配置）：
+
+**通知内容：**
+- 标题：✅ 剪藏完成: [来源] 文章标题
+- 内容：来源URL、文件名、图片数量、完成时间
+
+**配置步骤：**
+1. 在 `api-config.json` 中添加 `gotify_server` 和 `gotify_token`
+2. 下次剪藏完成后自动发送通知
+3. 通知失败不会阻塞剪藏流程
+
+**优先级：** 5（普通优先级）
 
 ## Future Enhancements
 

@@ -20,6 +20,59 @@ from html.parser import HTMLParser
 OUTPUT_BASE = Path("~/.openclaw/workspace/syncthing/raw").expanduser()
 USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
+# API Config paths (local, not in skill repo)
+API_CONFIG_PATHS = [
+    Path("~/.openclaw/workspace/.openclaw/api-config.json").expanduser(),
+    Path("~/.openclaw/api-config.json").expanduser(),
+]
+
+def load_api_config():
+    """Load API config from local file (not in skill repo)."""
+    for config_path in API_CONFIG_PATHS:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                continue
+    return {}
+
+def gotify_notify(title, message, priority=5):
+    """Send Gotify notification using local config."""
+    config = load_api_config()
+    server = config.get('gotify_server')
+    token = config.get('gotify_token')
+    
+    if not server or not token:
+        print("  ⚠️ Gotify not configured (missing server/token in api-config.json)", file=sys.stderr)
+        return False
+    
+    try:
+        import urllib.request
+        import urllib.parse
+        
+        url = f"{server}/message?token={token}"
+        data = urllib.parse.urlencode({
+            'title': title,
+            'message': message,
+            'priority': priority
+        }).encode('utf-8')
+        
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            if 'id' in result:
+                print(f"  [Gotify] 通知已发送: {title}", file=sys.stderr)
+                return True
+            else:
+                print(f"  [Gotify] 发送失败: {result}", file=sys.stderr)
+                return False
+    except Exception as e:
+        print(f"  [Gotify] 异常: {e}", file=sys.stderr)
+        return False
+
 # Site-specific parsers registry
 SITE_PARSERS = {}
 PARSER_HEALTH = {}  # Track parser success/failure rates
@@ -2049,6 +2102,16 @@ images_count: {len(downloaded_images)}
     md_path.write_text(markdown, encoding='utf-8')
     
     print(f"✅ Saved: {md_path}", file=sys.stderr)
+    
+    # Send Gotify notification (non-blocking)
+    if not test_mode:
+        try:
+            source_name = source_prefix or '网页'
+            notify_title = f"✅ 剪藏完成: [{source_name}] {title[:30]}"
+            notify_msg = f"来源: {url}\n文件: {md_path.name}\n图片: {len(downloaded_images)}张\n时间: {datetime.now().strftime('%H:%M:%S')}"
+            gotify_notify(notify_title, notify_msg, priority=5)
+        except Exception as e:
+            print(f"  ⚠️ Gotify通知失败: {e}", file=sys.stderr)
     
     if test_mode:
         return markdown
