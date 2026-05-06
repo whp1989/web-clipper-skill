@@ -49,7 +49,144 @@ python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "<URL>"
 | Bilibili | bilibili.com | JSON (__INITIAL_STATE__) | ✅ 视频下载+语音转文字 |
 | 微信公众号 | mp.weixin.qq.com | HTML + image extraction | ❌ |
 | 小宇宙 FM | xiaoyuzhoufm.com | Audio extraction | ✅ M4A |
+| 知识星球 | zsxq.com | zsxq-cli API | ❌ |
 | 其他网站 | * | Generic HTML parser | ❌ |
+
+## 知识星球爬虫 (zsxq-crawler)
+
+知识星球爬虫作为 web-clipper 的子模块，通过官方 `zsxq-cli` 调用 API，将知识星球内容同步为本地 Markdown。
+
+### 前置条件
+
+1. **Node.js 16+** 已安装
+2. **zsxq-cli** 已全局安装：`npm install -g zsxq-cli`
+3. **zsxq-cli 已登录**：运行 `zsxq-cli auth login` 完成 OAuth 授权
+4. **Python 3.8+** 环境
+
+验证登录状态：`zsxq-cli auth status`
+
+### 快速使用
+
+#### 1. 增量爬取（最常用）
+
+只获取上次爬取之后的新内容：
+
+```bash
+cd scripts/zsxq_crawler
+python zsxq_spider.py
+```
+
+#### 2. 按日期爬取（历史回溯）
+
+```bash
+python fetch_by_date.py --date 2026-04-29
+```
+
+#### 3. 其他模式
+
+```bash
+# 获取今天所有内容
+python zsxq_spider.py --mode today
+
+# 获取最近 N 条
+python zsxq_spider.py --mode recent --count 50
+
+# 测试模式（100条，不更新时间戳）
+python zsxq_spider.py --mode test
+```
+
+### 输出格式
+
+每个帖子保存为 Markdown 文件，命名规则：`{日期}_{标题}_{ID后6位}.md`
+
+Frontmatter 包含：
+- `title`: 标题
+- `date`: 发布日期
+- `time`: 发布时间
+- `author`: 作者
+- `type`: 内容类型 (talk/article/q&a)
+- `likes`: 点赞数
+- `comments`: 评论数
+- `source`: 原文链接
+
+输出目录由 `config.py` 中的 `OUTPUT_DIR` 控制。
+
+### 核心配置 (scripts/zsxq_crawler/config.py)
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `ZSXQ_CLI_PATH` | zsxq-cli 可执行文件路径 | npm 全局安装路径 |
+| `GROUP_ID` | 目标星球 ID | `48888584885518` |
+| `OUTPUT_DIR` | Markdown 输出目录 | `D:/Investing/Investing/知识星球` |
+| `REQUEST_DELAY` | 请求间隔（秒） | `1.5` |
+| `MAX_TOPICS_PER_PAGE` | 每页条数（最大 30） | `30` |
+| `MAX_PAGES` | 单次最大翻页数 | `200` |
+
+### 关键实现细节
+
+#### 增量爬取逻辑
+
+1. 读取 `time.md` 中的上次爬取截止时间
+2. 调用 zsxq-cli 获取该时间之后的新帖子
+3. 每页 30 条，自动翻页直到无新内容
+4. 生成 Markdown 文件到 `OUTPUT_DIR`
+5. 更新 `time.md` 时间戳
+
+#### 内嵌文章完整内容获取
+
+知识星球的 `talk.text` 字段通常只有 400 字符的摘要，真正的完整内容在 `talk.article.inline_article_url` 中。
+
+爬虫会自动：
+1. 检测 `talk.article` 是否存在
+2. 使用认证过的 session 请求 `inline_article_url`
+3. 从 HTML 中提取 `<div class="content ql-editor">` 的内容
+4. 将 HTML 转换为 Markdown 格式
+5. 当获取到完整文章时，跳过被截断的摘要，避免内容重复
+
+#### 时间戳文件
+
+`time.md` 位于 skill 根目录，自动维护，格式：
+
+```markdown
+# 爬取时间记录
+
+**上次爬取截止时间**: 2026-05-01T12:00:00+08:00
+```
+
+如需全量重新爬取，删除 `time.md` 即可。
+
+### zsxq-cli 调用方式
+
+通过 subprocess 调用官方 CLI：
+
+```python
+subprocess.run(
+    [cli_path, "group", "topics", "--group-id", group_id, "--json"],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+)
+```
+
+CLI 自动处理 OAuth Token、签名和限流。
+
+### 故障排查
+
+| 问题 | 解决 |
+|------|------|
+| zsxq-cli 未找到 | 检查 `config.py` 中 `ZSXQ_CLI_PATH` |
+| zsxq-cli 未登录 | 运行 `zsxq-cli auth login` |
+| 增量爬取无新内容 | 检查/删除 `time.md` 时间戳 |
+| 输出中文乱码 | 确保终端编码为 UTF-8 |
+
+### 注意事项
+
+1. 仅供个人学习使用，遵守知识星球服务条款
+2. 本程序仅做只读爬取，不涉及发帖/评论
+3. 图片仅保存链接，如需本地存储需额外处理
+4. 官方 CLI 有内置限流保护，保持 `REQUEST_DELAY >= 1` 秒
+
+---
 
 ## Parser Architecture
 
@@ -111,8 +248,28 @@ When a parser breaks:
 
 **URL**: https://github.com/whp1989/web-clipper-skill
 
+### 子模块结构
+
+```
+web-clipper-skill/
+├── SKILL.md                          # 本文件
+├── README.md
+├── CHANGELOG.md
+└── scripts/
+    ├── clipper.py                    # 主剪藏脚本
+    ├── push-to-github.sh             # 自动推送脚本
+    └── zsxq_crawler/                 # 知识星球爬虫子模块
+        ├── config.py
+        ├── zsxq_cli_client.py        # zsxq-cli 封装
+        ├── zsxq_spider.py            # 主爬虫（增量/今日/近期）
+        ├── fetch_by_date.py          # 按日期爬取
+        ├── api_client.py             # 备用 API 客户端
+        └── test_auth.py              # 认证测试
+```
+
 ### Auto-Push Updates
-After modifying `clipper.py` or `SKILL.md`:
+After modifying `clipper.py`, `SKILL.md`, or `zsxq_crawler/*.py`:
+
 ```bash
 bash ~/.openclaw/skills/web-clipper/scripts/push-to-github.sh
 ```
@@ -124,8 +281,15 @@ This automatically:
 
 ### For Other Agents
 Other agents can install this skill:
+
 ```bash
+# 完整安装（含知识星球爬虫）
 git clone https://github.com/whp1989/web-clipper-skill.git ~/.openclaw/skills/web-clipper
+
+# 仅安装剪藏功能（不含知识星球）
+git clone --sparse https://github.com/whp1989/web-clipper-skill.git ~/.openclaw/skills/web-clipper
+cd ~/.openclaw/skills/web-clipper
+git sparse-checkout set scripts/clipper.py SKILL.md
 ```
 
 ## Error Handling
