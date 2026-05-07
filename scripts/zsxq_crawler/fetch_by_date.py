@@ -31,13 +31,14 @@ def sanitize_filename(text):
     return text
 
 
-def parse_topic_to_markdown(topic, client=None):
+def parse_topic_to_markdown(topic, client=None, multimedia_dir=None):
     """
     将知识星球主题解析为Markdown格式
     
     Args:
         topic: 主题字典
         client: 可选的API客户端，用于获取内嵌文章完整内容
+        multimedia_dir: 可选的附件下载目录
     
     Returns:
         dict: {
@@ -51,6 +52,7 @@ def parse_topic_to_markdown(topic, client=None):
             "likes": int,
             "comments": int,
             "source": str,
+            "downloaded_files": list,  # 已下载的本地文件路径
         }
     """
     topic_id = topic.get("topic_id", "")
@@ -146,7 +148,6 @@ source: https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}
             try:
                 import requests
                 from html import unescape
-                import re
                 
                 response = client.session.get(inline_url, timeout=15)
                 if response.status_code == 200:
@@ -250,6 +251,7 @@ source: https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}
                 md_content += f"![图片]({img_url})\n\n"
     
     # 处理附件
+    downloaded_files = []
     if files:
         md_content += "## 附件\n\n"
         for f in files:
@@ -258,6 +260,83 @@ source: https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}
             if file_url:
                 md_content += f"- [{file_name}]({file_url})\n"
         md_content += "\n"
+        
+        # 下载PDF等文件到multimedia目录
+        if multimedia_dir and client:
+            import os
+            from pathlib import Path
+            
+            multimedia_path = Path(multimedia_dir)
+            multimedia_path.mkdir(parents=True, exist_ok=True)
+            
+            for f in files:
+                file_url = f.get("url", "")
+                file_name = f.get("name", "")
+                if file_url and file_name:
+                    ext = os.path.splitext(file_name)[1].lower()
+                    if ext in ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar']:
+                        try:
+                            safe_name = re.sub(r'[<>"/\\|?*]', '_', file_name)
+                            file_path = multimedia_path / safe_name
+                            
+                            if file_path.exists():
+                                print(f"[INFO] 文件已存在，跳过下载: {safe_name}")
+                                downloaded_files.append(str(file_path))
+                                continue
+                            
+                            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                            if hasattr(client, 'session') and client.session:
+                                response = client.session.get(file_url, headers=headers, timeout=60, stream=True)
+                            else:
+                                import requests
+                                response = requests.get(file_url, headers=headers, timeout=60, stream=True)
+                            
+                            # 如果404，尝试通过 download_url API 获取真实下载链接
+                            if response.status_code == 404:
+                                print(f"[INFO] 尝试通过 download_url API 获取下载链接...")
+                                download_url_api = f"https://api.zsxq.com/v2/files/{f.get('file_id', '')}/download_url"
+                                if hasattr(client, 'session') and client.session:
+                                    resp = client.session.get(download_url_api, headers=headers, timeout=30)
+                                else:
+                                    import requests
+                                    resp = requests.get(download_url_api, headers=headers, timeout=30)
+                                
+                                if resp.status_code == 200:
+                                    try:
+                                        data = resp.json()
+                                        if data.get("succeeded") and data.get("resp_data", {}).get("download_url"):
+                                            real_download_url = data["resp_data"]["download_url"]
+                                            print(f"[INFO] 获取到下载链接: {real_download_url[:100]}...")
+                                            # 重新下载
+                                            if hasattr(client, 'session') and client.session:
+                                                response = client.session.get(real_download_url, headers=headers, timeout=60, stream=True)
+                                            else:
+                                                import requests
+                                                response = requests.get(real_download_url, headers=headers, timeout=60, stream=True)
+                                        else:
+                                            print(f"[WARN] download_url API 返回无效数据")
+                                    except Exception as e:
+                                        print(f"[WARN] 解析 download_url API 响应失败: {e}")
+                                else:
+                                    print(f"[WARN] download_url API 返回 HTTP {resp.status_code}")
+                            
+                            if response.status_code == 200:
+                                with open(file_path, 'wb') as fp:
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            fp.write(chunk)
+                                print(f"[SUCCESS] 已下载文件: {safe_name} ({file_path.stat().st_size} bytes)")
+                                downloaded_files.append(str(file_path))
+                            else:
+                                print(f"[WARN] 下载文件失败，HTTP {response.status_code}: {safe_name}")
+                        except Exception as e:
+                            print(f"[WARN] 下载文件失败: {e}")
+            
+            if downloaded_files:
+                md_content += "## 本地附件\n\n"
+                for path in downloaded_files:
+                    md_content += f"- `{path}`\n"
+                md_content += "\n"
     
     # 处理评论预览
     if comments > 0:
@@ -275,6 +354,7 @@ source: https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}
         "likes": likes,
         "comments": comments,
         "source": f"https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}",
+        "downloaded_files": downloaded_files,
     }
 
 
@@ -420,6 +500,7 @@ def main():
     parser.add_argument("--date", type=str, required=True, help="目标日期 (YYYY-MM-DD)")
     parser.add_argument("--output", type=str, default=OUTPUT_DIR, help="输出目录")
     parser.add_argument("--group-id", type=str, default=GROUP_ID, help="星球ID")
+    parser.add_argument("--multimedia", type=str, default=None, help="附件下载目录 (PDF等文件会下载到此目录)")
     
     args = parser.parse_args()
     
@@ -429,6 +510,8 @@ def main():
     print(f"目标日期: {args.date}")
     print(f"输出目录: {args.output}")
     print(f"星球ID: {args.group_id}")
+    if args.multimedia:
+        print(f"附件下载目录: {args.multimedia}")
     print("=" * 60)
     
     # 初始化客户端
@@ -450,9 +533,11 @@ def main():
     saved_count = 0
     for topic in topics:
         try:
-            topic_data = parse_topic_to_markdown(topic, client)
+            topic_data = parse_topic_to_markdown(topic, client, multimedia_dir=args.multimedia)
             file_path = save_topic_to_file(topic_data, args.output)
             print(f"  保存: {file_path.name}")
+            if topic_data.get('downloaded_files'):
+                print(f"    下载附件: {len(topic_data['downloaded_files'])} 个")
             saved_count += 1
         except Exception as e:
             print(f"  保存失败: {e}")

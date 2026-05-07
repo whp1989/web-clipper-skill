@@ -10,6 +10,7 @@ import json
 import time
 import os
 import sys
+import re
 import requests
 
 import config
@@ -40,7 +41,7 @@ class ZsxqCliClient:
             self.session = requests.Session()
             self.session.headers.update({
                 "User-Agent": USER_AGENT,
-                "Accept": "application/json",
+                "Accept": "application/json, application/octet-stream, */*",
                 "X-API-Key": self.access_token,
             })
             self._check_token_auth()
@@ -449,6 +450,141 @@ class ZsxqCliClient:
         if data and data.get("succeeded"):
             return data.get("resp_data", {}).get("groups", [])
         return []
+    
+    def download_file(self, file_id, file_name, output_dir):
+        """
+        下载文件到指定目录
+        
+        Args:
+            file_id: 文件ID
+            file_name: 保存的文件名
+            output_dir: 输出目录
+            
+        Returns:
+            str: 本地文件路径，失败返回空字符串
+        """
+        if not file_id or not file_name:
+            return ""
+        
+        try:
+            from pathlib import Path
+            
+            # 确保输出目录存在
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            # 清理文件名
+            safe_name = re.sub(r'[<>:"/\\|?*]', '_', file_name)
+            file_path = output_path / safe_name
+            
+            # 检查文件是否已存在
+            if file_path.exists():
+                print(f"[INFO] 文件已存在，跳过下载: {safe_name}")
+                return str(file_path)
+            
+            # 构造下载URL - 知识星球文件使用特殊的CDN链接格式
+            # 根据hash构造下载链接
+            download_url = f"https://api.zsxq.com/v2/files/{file_id}/download"
+            
+            # 尝试通过 topics API 获取文件下载链接
+            # 知识星球的文件下载通常需要通过特殊的认证URL
+            # 使用 zsxq-cli 的 download 命令或构造特殊URL
+            
+            # 方法1: 尝试直接下载（可能返回重定向）
+            headers = {
+                "User-Agent": USER_AGENT,
+                "Accept": "application/octet-stream, */*",
+                "Referer": "https://wx.zsxq.com/",
+            }
+            
+            # 使用认证session
+            if self.access_token:
+                # 添加必要的认证头
+                auth_headers = {
+                    **headers,
+                    "X-API-Key": self.access_token,
+                }
+                response = self.session.get(download_url, headers=auth_headers, timeout=60, stream=True, allow_redirects=True)
+            else:
+                response = requests.get(download_url, headers=headers, timeout=60, stream=True, allow_redirects=True)
+            
+            # 如果404，尝试通过 download_url API 获取真实下载链接
+            if response.status_code == 404:
+                print(f"[INFO] 尝试通过 download_url API 获取下载链接...")
+                download_url_api = f"https://api.zsxq.com/v2/files/{file_id}/download_url"
+                if self.access_token:
+                    resp = self.session.get(download_url_api, headers=auth_headers, timeout=30)
+                else:
+                    resp = requests.get(download_url_api, headers=headers, timeout=30)
+                
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                        if data.get("succeeded") and data.get("resp_data", {}).get("download_url"):
+                            download_url = data["resp_data"]["download_url"]
+                            print(f"[INFO] 获取到下载链接: {download_url[:100]}...")
+                            # 重新下载
+                            if self.access_token:
+                                response = self.session.get(download_url, headers=headers, timeout=60, stream=True, allow_redirects=True)
+                            else:
+                                response = requests.get(download_url, headers=headers, timeout=60, stream=True, allow_redirects=True)
+                        else:
+                            print(f"[WARN] download_url API 返回无效数据")
+                    except Exception as e:
+                        print(f"[WARN] 解析 download_url API 响应失败: {e}")
+                else:
+                    print(f"[WARN] download_url API 返回 HTTP {resp.status_code}")
+            
+            if response.status_code != 200:
+                print(f"[WARN] 下载文件失败，HTTP {response.status_code}: {safe_name}")
+                return ""
+            
+            # 保存文件
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f"[SUCCESS] 已下载文件: {safe_name} ({file_path.stat().st_size} bytes)")
+            return str(file_path)
+            
+        except Exception as e:
+            print(f"[WARN] 下载文件失败: {e}")
+            return ""
+        """
+        获取文件下载URL
+        
+        Args:
+            file_id: 文件ID
+            
+        Returns:
+            str: 下载URL，失败返回None
+        """
+        try:
+            # 使用直接API调用获取文件信息
+            if self.access_token:
+                response = self.session.get(
+                    f"https://api.zsxq.com/v2/files/{file_id}",
+                    timeout=30
+                )
+                time.sleep(REQUEST_DELAY)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("succeeded"):
+                        # 构造下载URL
+                        download_url = f"https://api.zsxq.com/v2/files/{file_id}/download"
+                        return download_url
+            
+            # 备用：通过CLI获取
+            data = self._run("api", "raw", "--method", "GET", "--path", f"/v2/files/{file_id}")
+            if data and data.get("result", {}).get("body", {}).get("succeeded"):
+                return f"https://api.zsxq.com/v2/files/{file_id}/download"
+            
+            return None
+        except Exception as e:
+            print(f"[ERROR] 获取文件下载URL失败: {e}")
+            return None
 
 
 if __name__ == "__main__":

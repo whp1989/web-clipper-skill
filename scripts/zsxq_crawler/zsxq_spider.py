@@ -465,6 +465,124 @@ class ZsxqSpider:
             print(f"[WARN] 获取内嵌文章失败: {e}")
             return ""
     
+    def download_file(self, file_url, file_name, output_dir):
+        """
+        下载附件文件到指定目录
+        
+        Args:
+            file_url: 文件下载链接
+            file_name: 保存的文件名
+            output_dir: 输出目录（multimedia文件夹）
+        
+        Returns:
+            str: 本地文件路径，失败返回空字符串
+        """
+        if not file_url or not file_name:
+            return ""
+        
+        try:
+            import requests
+            from pathlib import Path
+            
+            # 确保输出目录存在
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            # 清理文件名
+            safe_name = re.sub(r'[\u003c\u003e:"/\\|?*]', '_', file_name)
+            file_path = output_path / safe_name
+            
+            # 检查文件是否已存在
+            if file_path.exists():
+                print(f"[INFO] 文件已存在，跳过下载: {safe_name}")
+                return str(file_path)
+            
+            # 下载文件
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            # 如果有认证session，使用它
+            if hasattr(self.client, 'session') and self.client.session:
+                response = self.client.session.get(file_url, headers=headers, timeout=60, stream=True)
+            else:
+                response = requests.get(file_url, headers=headers, timeout=60, stream=True)
+            
+            if response.status_code != 200:
+                print(f"[WARN] 下载文件失败，HTTP {response.status_code}: {safe_name}")
+                return ""
+            
+            # 保存文件
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f"[SUCCESS] 已下载文件: {safe_name} ({file_path.stat().st_size} bytes)")
+            return str(file_path)
+            
+        except Exception as e:
+            print(f"[WARN] 下载文件失败: {e}")
+            return ""
+        """
+        下载附件文件到指定目录
+        
+        Args:
+            file_url: 文件下载链接
+            file_name: 保存的文件名
+            output_dir: 输出目录（multimedia文件夹）
+        
+        Returns:
+            str: 本地文件路径，失败返回空字符串
+        """
+        if not file_url or not file_name:
+            return ""
+        
+        try:
+            import requests
+            from pathlib import Path
+            
+            # 确保输出目录存在
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            # 清理文件名
+            safe_name = re.sub(r'[<>:"/\\|?*]', '_', file_name)
+            file_path = output_path / safe_name
+            
+            # 检查文件是否已存在
+            if file_path.exists():
+                print(f"[INFO] 文件已存在，跳过下载: {safe_name}")
+                return str(file_path)
+            
+            # 下载文件
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            
+            # 如果有认证session，使用它
+            if hasattr(self.client, 'session') and self.client.session:
+                response = self.client.session.get(file_url, headers=headers, timeout=60, stream=True)
+            else:
+                response = requests.get(file_url, headers=headers, timeout=60, stream=True)
+            
+            if response.status_code != 200:
+                print(f"[WARN] 下载文件失败，HTTP {response.status_code}: {safe_name}")
+                return ""
+            
+            # 保存文件
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f"[SUCCESS] 已下载文件: {safe_name} ({file_path.stat().st_size} bytes)")
+            return str(file_path)
+            
+        except Exception as e:
+            print(f"[WARN] 下载文件失败: {e}")
+            return ""
+    
     def _html_to_markdown(self, html_content):
         """
         将HTML内容转换为Markdown
@@ -627,7 +745,7 @@ class ZsxqSpider:
 
         return result
 
-    def save_to_obsidian(self, topic_data):
+    def save_to_obsidian(self, topic_data, multimedia_dir=None):
         """保存主题到 Obsidian"""
         create_time = topic_data.get("create_time", "")
         topic_id = topic_data.get("id") or str(int(time.time() * 1000))
@@ -692,6 +810,26 @@ class ZsxqSpider:
                 if url:
                     content_lines.append(f"- [{name}]({url})")
             content_lines.append("")
+            
+            # 下载PDF等文件到multimedia目录
+            if multimedia_dir:
+                downloaded_files = []
+                for f in files:
+                    file_url = f.get("url", "")
+                    file_name = f.get("name", "")
+                    if file_url and file_name:
+                        # 检查是否是PDF或其他可下载文件
+                        ext = os.path.splitext(file_name)[1].lower()
+                        if ext in ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar']:
+                            local_path = self.download_file(file_url, file_name, multimedia_dir)
+                            if local_path:
+                                downloaded_files.append((file_name, local_path))
+                
+                if downloaded_files:
+                    content_lines.append("## 本地附件")
+                    for name, path in downloaded_files:
+                        content_lines.append(f"- {name}: `{path}`")
+                    content_lines.append("")
 
         # 内嵌链接
         urls = topic_data.get("urls", [])
@@ -751,7 +889,7 @@ class ZsxqSpider:
                 continue
         return None
 
-    def run(self, count=10, today_only=True, incremental=True, test_mode=False):
+    def run(self, count=10, today_only=True, incremental=True, test_mode=False, multimedia_dir=None):
         """运行爬虫"""
         print("=" * 50)
         print("知识星球爬虫启动 (zsxq-cli 版本)")
@@ -765,6 +903,8 @@ class ZsxqSpider:
             print(f"获取范围: 今天 ({datetime.now().strftime('%Y-%m-%d')}) 的所有内容")
         else:
             print(f"获取数量: 最近 {count} 条")
+        if multimedia_dir:
+            print(f"附件下载目录: {multimedia_dir}")
         print("=" * 50)
 
         # 1. 检查认证并获取星球信息
@@ -813,7 +953,7 @@ class ZsxqSpider:
         for topic in topics:
             try:
                 parsed = self.parse_topic(topic)
-                self.save_to_obsidian(parsed)
+                self.save_to_obsidian(parsed, multimedia_dir=multimedia_dir)
                 saved_count += 1
 
                 create_time = topic.get("create_time")
@@ -843,6 +983,13 @@ def main():
 
     test_mode = "--test" in sys.argv
     recent_mode = "--recent" in sys.argv
+    
+    # 解析multimedia目录参数
+    multimedia_dir = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--multimedia" and i + 1 < len(sys.argv):
+            multimedia_dir = sys.argv[i + 1]
+            break
 
     try:
         spider = ZsxqSpider()
@@ -852,13 +999,13 @@ def main():
 
     if test_mode:
         print("[INFO] 启动测试模式（获取最近100条，不更新时间戳）")
-        spider.run(test_mode=True)
+        spider.run(test_mode=True, multimedia_dir=multimedia_dir)
     elif recent_mode:
         print("[INFO] 启动近期模式（获取最近100条）")
-        spider.run(count=100, today_only=False, incremental=False)
+        spider.run(count=100, today_only=False, incremental=False, multimedia_dir=multimedia_dir)
     else:
         print("[INFO] 启动增量爬取模式")
-        spider.run(incremental=True)
+        spider.run(incremental=True, multimedia_dir=multimedia_dir)
 
 
 if __name__ == "__main__":
