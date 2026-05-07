@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from config import GROUP_ID, OUTPUT_DIR, MAX_TOPICS_PER_PAGE, MAX_PAGES
+from config import GROUP_ID, OUTPUT_DIR, MULTIMEDIA_DIR, MAX_TOPICS_PER_PAGE, MAX_PAGES
 from zsxq_cli_client import ZsxqCliClient, ZsxqCliError
 
 

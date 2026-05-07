@@ -46,6 +46,9 @@ GROUP_ID = "48888584885518"
 # 例如：5月6日凌晨爬取5月5日的帖子，存放在 2026-05-06 文件夹
 OUTPUT_DIR = "/root/.openclaw/workspace/syncthing/raw/2026-05-06"
 
+# 附件下载目录（与每日剪藏文件夹同级）
+MULTIMEDIA_DIR = "/root/.openclaw/workspace/syncthing/raw/multimedia"
+
 # 请求头User-Agent（一般不需要修改）
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 

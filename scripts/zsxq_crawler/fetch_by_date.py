@@ -13,7 +13,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from config import GROUP_ID, OUTPUT_DIR, REQUEST_DELAY, MAX_TOPICS_PER_PAGE, MAX_PAGES
+from config import GROUP_ID, OUTPUT_DIR, MULTIMEDIA_DIR, REQUEST_DELAY, MAX_TOPICS_PER_PAGE, MAX_PAGES
 from api_client import ZsxqApiClient, ZsxqApiError
 
 
@@ -263,7 +263,6 @@ source: https://wx.zsxq.com/dweb2/index/topic_detail/{topic_id}
         
         # 下载PDF等文件到multimedia目录
         if multimedia_dir and client:
-            import os
             from pathlib import Path
             
             multimedia_path = Path(multimedia_dir)
@@ -500,7 +499,7 @@ def main():
     parser.add_argument("--date", type=str, required=True, help="目标日期 (YYYY-MM-DD)")
     parser.add_argument("--output", type=str, default=OUTPUT_DIR, help="输出目录")
     parser.add_argument("--group-id", type=str, default=GROUP_ID, help="星球ID")
-    parser.add_argument("--multimedia", type=str, default=None, help="附件下载目录 (PDF等文件会下载到此目录)")
+    parser.add_argument("--multimedia", type=str, default=MULTIMEDIA_DIR, help="附件下载目录 (PDF等文件会下载到此目录)")
     
     args = parser.parse_args()
     
