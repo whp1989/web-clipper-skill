@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
 雪球股票信息获取工具 - xueqiu-stock
-通过东方财富公开API获取股票公告和讨论信息，保存为Markdown文件。
+通过雪球网Cookie获取指定股票的公告和讨论信息，保存为Markdown文件。
 
-当东方财富不可用时，可切换到RSSHub方案（需要可访问的RSSHub实例）。
+使用方法：
+1. 首次使用需要提供Cookie
+2. Cookie会自动保存到本地文件
+3. 后续自动加载使用
+4. Cookie过期后需要重新提供
 """
 
 import os
@@ -12,22 +16,31 @@ import json
 import re
 import time
 import argparse
-import urllib.request
-import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import requests
 
 # Configuration
 OUTPUT_BASE = Path("~/.openclaw/workspace/syncthing/raw").expanduser()
 MULTIMEDIA_DIR = OUTPUT_BASE / "multimedia"
+COOKIE_FILE = Path("~/.openclaw/workspace/.xueqiu_cookies.json").expanduser()
 API_CONFIG_PATHS = [
     Path("~/.openclaw/workspace/.openclaw/api-config.json").expanduser(),
     Path("~/.openclaw/api-config.json").expanduser(),
 ]
 
-# 东方财富API (公开，无需登录)
-EASTMONEY_SEARCH_API = "https://searchapi.eastmoney.com/api/suggest/get"
-EASTMONEY_NOTICE_API = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+# 雪球API配置
+XUEQIU_HOME = "https://xueqiu.com"
+XUEQIU_API_BASE = "https://xueqiu.com/query/v1/symbol/search/status"
+
+# 请求头模板
+HEADERS_TEMPLATE = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://xueqiu.com/",
+    "Origin": "https://xueqiu.com",
+}
 
 
 def load_api_config():
@@ -54,23 +67,21 @@ def gotify_notify(title, message, priority=5):
     
     try:
         url = f"{server}/message?token={token}"
-        data = urllib.parse.urlencode({
+        data = {
             'title': title,
             'message': message,
             'priority': priority
-        }).encode('utf-8')
+        }
         
-        req = urllib.request.Request(url, data=data, method='POST')
-        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        resp = requests.post(url, data=data, timeout=15)
+        result = resp.json()
         
-        with urllib.request.urlopen(req, timeout=15) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            if 'id' in result:
-                print(f"  [Gotify] 通知已发送: {title}", file=sys.stderr)
-                return True
-            else:
-                print(f"  [Gotify] 发送失败", file=sys.stderr)
-                return False
+        if 'id' in result:
+            print(f"  [Gotify] 通知已发送: {title}", file=sys.stderr)
+            return True
+        else:
+            print(f"  [Gotify] 发送失败", file=sys.stderr)
+            return False
     except Exception as e:
         print(f"  [Gotify] 异常: {e}", file=sys.stderr)
         return False
@@ -99,180 +110,200 @@ def trigger_nas_sync():
         return False
 
 
-def search_stock_code(stock_name):
+def save_cookies(cookies):
+    """保存Cookie到文件"""
+    try:
+        COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cookies, f, indent=2)
+        print(f"[INFO] Cookie已保存到: {COOKIE_FILE}")
+    except Exception as e:
+        print(f"[WARN] 保存Cookie失败: {e}")
+
+
+def load_cookies():
+    """从文件加载Cookie"""
+    if COOKIE_FILE.exists():
+        try:
+            with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[WARN] 加载Cookie失败: {e}")
+    return None
+
+
+def get_session_with_cookies(provided_cookie=None):
     """
-    搜索股票代码
+    获取带Cookie的session
     
     Args:
-        stock_name: 股票名称或代码
+        provided_cookie: 用户提供的Cookie字符串（可选）
     
     Returns:
-        tuple: (股票代码, 股票名称, 市场) 或 (None, None, None)
+        requests.Session: 带Cookie的session，或None
     """
-    try:
-        params = {
-            'input': stock_name,
-            'type': '14',
-            'count': '5',
-        }
+    session = requests.Session()
+    session.headers.update(HEADERS_TEMPLATE)
+    
+    # 如果提供了Cookie，使用提供的
+    if provided_cookie:
+        print("[INFO] 使用用户提供的Cookie")
+        # 解析Cookie字符串
+        cookies = {}
+        for item in provided_cookie.split(';'):
+            if '=' in item:
+                key, value = item.strip().split('=', 1)
+                cookies[key] = value
         
-        url = f"{EASTMONEY_SEARCH_API}?{urllib.parse.urlencode(params)}"
+        # 设置到session
+        session.cookies.update(cookies)
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Referer': 'https://www.eastmoney.com/',
-        }
-        
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            
-            if data.get('QuotationCodeTable', {}).get('Data'):
-                stock = data['QuotationCodeTable']['Data'][0]
-                code = stock.get('Code')
-                name = stock.get('Name')
-                market = stock.get('SecurityTypeName')
-                return code, name, market
-            
-            return None, None, None
-    except Exception as e:
-        print(f"[ERROR] Search failed: {e}")
-        return None, None, None
+        # 保存到文件
+        save_cookies(cookies)
+        return session
+    
+    # 尝试加载保存的Cookie
+    saved_cookies = load_cookies()
+    if saved_cookies:
+        print("[INFO] 使用保存的Cookie")
+        session.cookies.update(saved_cookies)
+        return session
+    
+    print("[ERROR] 未找到Cookie，请提供Cookie参数")
+    return None
 
 
-def fetch_stock_announcements(stock_code, max_items=20):
+def fetch_stock_discussions(session, symbol, max_pages=5):
     """
-    获取股票公告和财务数据
+    获取股票讨论信息
     
     Args:
-        stock_code: 股票代码
-        max_items: 最大获取条数
-    
-    Returns:
-        list: 公告/财务数据列表
-    """
-    announcements = []
-    
-    try:
-        # 东方财富财务数据API (已验证可用)
-        params = {
-            'sortColumns': 'UPDATE_DATE,SECURITY_CODE',
-            'sortTypes': '-1,-1',
-            'pageSize': max_items,
-            'pageNumber': 1,
-            'reportName': 'RPT_FCI_PERFORMANCEE',
-            'columns': 'ALL',
-            'source': 'WEB',
-            'client': 'WEB',
-            'filter': f'(SECURITY_CODE="{stock_code}")',
-        }
-        
-        url = f"{EASTMONEY_NOTICE_API}?{urllib.parse.urlencode(params)}"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Referer': 'https://data.eastmoney.com/notices/',
-        }
-        
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            
-            if data.get('result', {}).get('data'):
-                for item in data['result']['data']:
-                    # 构建标题
-                    report_type = item.get('DATATYPE', '')
-                    year = item.get('REPORT_DATE', '')[:4] if item.get('REPORT_DATE') else ''
-                    title = f"{year}年 {report_type}" if year and report_type else report_type
-                    
-                    # 构建描述
-                    desc_parts = []
-                    if item.get('BASIC_EPS'):
-                        desc_parts.append(f"每股收益: {item['BASIC_EPS']}")
-                    if item.get('TOTAL_OPERATE_INCOME'):
-                        income = item['TOTAL_OPERATE_INCOME'] / 100000000
-                        desc_parts.append(f"营业收入: {income:.2f}亿")
-                    if item.get('PARENT_NETPROFIT'):
-                        profit = item['PARENT_NETPROFIT'] / 100000000
-                        desc_parts.append(f"净利润: {profit:.2f}亿")
-                    if item.get('WEIGHTAVG_ROE'):
-                        desc_parts.append(f"净资产收益率: {item['WEIGHTAVG_ROE']}%")
-                    
-                    announcement = {
-                        'title': title or '财务报告',
-                        'date': item.get('NOTICE_DATE', item.get('UPDATE_DATE', '')),
-                        'type': report_type or '财务数据',
-                        'description': '\n'.join(desc_parts),
-                        'url': f"https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/Index?type=web&code={stock_code}",
-                    }
-                    announcements.append(announcement)
-        
-        return announcements
-    except Exception as e:
-        print(f"[ERROR] Fetch announcements failed: {e}")
-        return []
-
-
-def fetch_stock_discussions(stock_code, max_items=20):
-    """
-    获取股票讨论 (使用股吧数据)
-    
-    Args:
-        stock_code: 股票代码
-        max_items: 最大获取条数
+        session: 带Cookie的requests.Session
+        symbol: 股票代码（如 SH002595）
+        max_pages: 最大翻页数
     
     Returns:
         list: 讨论列表
     """
     discussions = []
     
-    try:
-        # 东方财富股吧API
-        url = f"https://guba.eastmoney.com/api/taobaolst"
+    for page in range(1, max_pages + 1):
+        print(f"[INFO] 获取第 {page} 页讨论...")
+        
         params = {
-            'type': '1',
-            'code': stock_code,
-            'page': '1',
-            'size': max_items,
+            "count": 10,
+            "comment": 0,
+            "symbol": symbol,
+            "hl": 0,
+            "source": "user",
+            "sort": "time",
+            "page": page,
         }
         
-        full_url = f"{url}?{urllib.parse.urlencode(params)}"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Referer': f'https://guba.eastmoney.com/list,{stock_code}.html',
-        }
-        
-        req = urllib.request.Request(full_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = json.loads(response.read().decode('utf-8'))
+        try:
+            resp = session.get(XUEQIU_API_BASE, params=params, timeout=15)
             
-            if data.get('re', []):
-                for item in data['re']:
-                    discussion = {
-                        'title': item.get('title', ''),
-                        'author': item.get('author', ''),
-                        'content': item.get('content', ''),
-                        'date': item.get('post_publish_time', ''),
-                        'url': item.get('post_id', ''),
-                    }
-                    discussions.append(discussion)
-        
-        return discussions
-    except Exception as e:
-        print(f"[ERROR] Fetch discussions failed: {e}")
-        return []
+            if resp.status_code == 403:
+                print("[WARN] 403 Forbidden，Cookie可能已过期")
+                break
+            
+            if resp.status_code != 200:
+                print(f"[WARN] HTTP {resp.status_code}")
+                break
+            
+            # 检查是否是JSON
+            try:
+                data = resp.json()
+            except:
+                print("[WARN] 返回的不是JSON，可能是WAF拦截")
+                break
+            
+            if data.get("code") != 200:
+                print(f"[WARN] API返回错误: {data.get('message', '未知错误')}")
+                break
+            
+            items = data.get("data", {}).get("items", [])
+            if not items:
+                print("[INFO] 无更多讨论，结束翻页")
+                break
+            
+            for item in items:
+                discussion = {
+                    "id": item.get("id"),
+                    "title": item.get("title", ""),
+                    "text": item.get("text", ""),
+                    "created_at": item.get("created_at"),
+                    "user": item.get("user", {}).get("screen_name", "未知用户"),
+                    "likes": item.get("like_count", 0),
+                    "comments": item.get("reply_count", 0),
+                    "retweets": item.get("retweet_count", 0),
+                }
+                discussions.append(discussion)
+            
+            print(f"[INFO] 第 {page} 页获取 {len(items)} 条讨论")
+            
+            # 添加延迟避免触发风控
+            if page < max_pages:
+                time.sleep(1.5)
+                
+        except Exception as e:
+            print(f"[ERROR] 获取讨论失败: {e}")
+            break
+    
+    print(f"[INFO] 共获取 {len(discussions)} 条讨论")
+    return discussions
 
 
-def save_to_markdown(announcements, discussions, stock_name, stock_code, output_dir):
+def parse_discussion_to_markdown(discussion):
     """
-    保存到Markdown文件
+    将讨论解析为Markdown格式
     
     Args:
-        announcements: 公告列表
+        discussion: 讨论字典
+    
+    Returns:
+        str: Markdown内容
+    """
+    # 清理HTML标签
+    text = discussion["text"]
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&amp;', '&')
+    
+    # 格式化时间
+    created_at = discussion.get("created_at", "")
+    if created_at:
+        try:
+            dt = datetime.fromtimestamp(created_at / 1000, tz=timezone(timedelta(hours=8)))
+            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            time_str = str(created_at)
+    else:
+        time_str = "未知时间"
+    
+    markdown = f"""### {discussion.get('title', '无标题')}
+
+**作者**: {discussion['user']} | **时间**: {time_str}
+**点赞**: {discussion['likes']} | **评论**: {discussion['comments']} | **转发**: {discussion['retweets']}
+
+{text}
+
+---
+
+"""
+    return markdown
+
+
+def save_discussions_to_file(discussions, stock_name, symbol, output_dir):
+    """
+    保存讨论到Markdown文件
+    
+    Args:
         discussions: 讨论列表
         stock_name: 股票名称
-        stock_code: 股票代码
+        symbol: 股票代码
         output_dir: 输出目录
     
     Returns:
@@ -281,158 +312,99 @@ def save_to_markdown(announcements, discussions, stock_name, stock_code, output_
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # 构建文件名
-    today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+    # 构建文件名: {日期}_{股票名称}_{股票代码}.md
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
     safe_name = re.sub(r'[<>":/\\|?*]', '_', stock_name)
-    filename = f"{today}_{safe_name}_{stock_code}_雪球.md"
+    filename = f"{today}_{safe_name}_{symbol}.md"
     file_path = output_path / filename
     
     # 构建Markdown内容
     now = datetime.now(timezone(timedelta(hours=8)))
     
     markdown = f"""---
-title: {stock_name}({stock_code}) - 股票信息
+title: {stock_name}({symbol}) - 雪球讨论
 date: {today}
-source: eastmoney.com
-symbol: {stock_code}
+source: xueqiu.com
+symbol: {symbol}
 ---
 
-# {stock_name}({stock_code}) - 股票信息
+# {stock_name}({symbol}) - 雪球讨论
 
 **获取时间**: {now.strftime('%Y-%m-%d %H:%M:%S')}
-**数据来源**: [东方财富](https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/Index?type=web&code={stock_code})
-**公告/财报数量**: {len(announcements)} 条
+**数据来源**: [雪球网](https://xueqiu.com/S/{symbol})
 **讨论数量**: {len(discussions)} 条
 
 ---
 
-## 📢 公告/财务报告
-
 """
     
-    if announcements:
-        for item in announcements:
-            markdown += f"""### {item['title']}
-
-**时间**: {item['date']} | **类型**: {item['type']}
-
-{item['description']}
-
-**链接**: [{item['url']}]({item['url']})
-
----
-
-"""
-    else:
-        markdown += "*暂无公告*\n\n"
-    
-    markdown += "## 💬 讨论\n\n"
-    
-    if discussions:
-        for item in discussions:
-            # 清理HTML标签
-            content = re.sub(r'<[^>]+>', '', item.get('content', ''))
-            content = content.replace('&nbsp;', ' ')
-            
-            markdown += f"""### {item['title']}
-
-**作者**: {item['author']} | **时间**: {item['date']}
-
-{content}
-
----
-
-"""
-    else:
-        markdown += "*暂无讨论*\n\n"
+    for discussion in discussions:
+        markdown += parse_discussion_to_markdown(discussion)
     
     # 写入文件
     file_path.write_text(markdown, encoding='utf-8')
     
-    print(f"[SUCCESS] Saved: {file_path}")
-    return str(file_path)
+    print(f"[SUCCESS] 已保存: {file_path}")
+    return file_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description='雪球股票信息获取工具 (东方财富方案)')
-    parser.add_argument('--symbol', type=str, required=True, help='股票代码（如 002595）或名称（如 豪迈科技）')
+    parser = argparse.ArgumentParser(description='雪球股票讨论获取工具')
+    parser.add_argument('--symbol', type=str, required=True, help='股票代码（如 SH002595）')
     parser.add_argument('--name', type=str, help='股票名称（可选）')
     parser.add_argument('--output', type=str, default=str(OUTPUT_BASE), help='输出目录')
-    parser.add_argument('--max-items', type=int, default=20, help='最大获取条数（默认20）')
+    parser.add_argument('--max-pages', type=int, default=5, help='最大翻页数（默认5）')
+    parser.add_argument('--cookie', type=str, help='雪球网Cookie字符串（首次使用需要提供）')
     
     args = parser.parse_args()
     
-    input_value = args.symbol
-    stock_name = args.name
+    symbol = args.symbol
+    stock_name = args.name or symbol
     output_dir = args.output
-    max_items = args.max_items
     
     print(f"=" * 60)
-    print(f"雪球股票信息获取 (东方财富方案)")
+    print(f"雪球股票讨论获取")
     print(f"=" * 60)
-    
-    # 判断输入是代码还是名称
-    if input_value.isdigit():
-        stock_code = input_value
-        if not stock_name:
-            # 尝试搜索名称
-            _, found_name, _ = search_stock_code(stock_code)
-            if found_name:
-                stock_name = found_name
-            else:
-                stock_name = stock_code
-        print(f"股票代码: {stock_code}")
-    else:
-        # 搜索股票代码
-        print(f"正在搜索: {input_value}")
-        stock_code, found_name, market = search_stock_code(input_value)
-        if not stock_code:
-            print(f"[ERROR] 未找到股票: {input_value}")
-            sys.exit(1)
-        stock_name = input_value
-        print(f"搜索结果: {found_name} ({stock_code}) - {market}")
-    
+    print(f"股票代码: {symbol}")
     print(f"股票名称: {stock_name}")
     print(f"输出目录: {output_dir}")
+    if args.cookie:
+        print(f"Cookie: 用户提供")
     print(f"=" * 60)
     
-    # 获取公告
-    print(f"\n[INFO] 获取公告...")
-    announcements = fetch_stock_announcements(stock_code, max_items)
-    print(f"[INFO] 获取到 {len(announcements)} 条公告")
+    # 获取Cookie
+    session = get_session_with_cookies(args.cookie)
+    if not session:
+        print("[ERROR] 无法获取Cookie，退出")
+        print("[INFO] 提示: 雪球网需要登录才能获取讨论数据")
+        print("[INFO] 请提供Cookie参数: --cookie 'xq_a_token=xxx; xq_r_token=xxx'")
+        sys.exit(1)
     
     # 获取讨论
-    print(f"\n[INFO] 获取讨论...")
-    discussions = fetch_stock_discussions(stock_code, max_items)
-    print(f"[INFO] 获取到 {len(discussions)} 条讨论")
+    discussions = fetch_stock_discussions(session, symbol, max_pages=args.max_pages)
+    
+    if not discussions:
+        print("[WARN] 未获取到任何讨论")
+        print("[INFO] 可能原因: Cookie无效或已过期，请重新提供Cookie")
+        sys.exit(0)
     
     # 保存到文件
-    if announcements or discussions:
-        file_path = save_to_markdown(announcements, discussions, stock_name, stock_code, output_dir)
-        
-        # 发送通知
-        gotify_notify(
-            f"雪球: {stock_name}",
-            f"获取 {len(announcements)} 条公告, {len(discussions)} 条讨论\n{file_path}",
-            priority=5
-        )
-        
-        # 触发NAS同步
-        trigger_nas_sync()
-        
-        print(f"\n" + "=" * 60)
-        print(f"完成！")
-        print(f"公告: {len(announcements)} 条")
-        print(f"讨论: {len(discussions)} 条")
-        print(f"文件: {file_path}")
-        print(f"=" * 60)
-    else:
-        print("\n[WARN] 未获取到任何数据")
-        gotify_notify(
-            f"雪球: {stock_name} - 获取失败",
-            "未能获取任何数据",
-            priority=8
-        )
+    file_path = save_discussions_to_file(discussions, stock_name, symbol, output_dir)
+    
+    # 发送通知
+    gotify_notify(
+        f"雪球: {stock_name}",
+        f"获取 {len(discussions)} 条讨论\n{file_path}",
+        priority=5
+    )
+    
+    # 触发NAS同步
+    trigger_nas_sync()
+    
+    print(f"=" * 60)
+    print(f"完成！共保存 {len(discussions)} 条讨论")
+    print(f"文件路径: {file_path}")
+    print(f"=" * 60)
 
 
 if __name__ == "__main__":
