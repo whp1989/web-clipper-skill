@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-雪球股票信息获取工具 - xueqiu-stock (RSSHub版本)
-通过RSSHub获取指定股票的公告和讨论信息，保存为Markdown文件。
+雪球股票信息获取工具 - xueqiu-stock
+通过东方财富公开API获取股票公告和讨论信息，保存为Markdown文件。
 
-RSSHub路由:
-- 股票信息: https://rsshub.pandaponds/xueqiu/stock_info/{symbol}
-- 股票讨论: https://rsshub.pandaponds/xueqiu/stock_comments/{symbol}
-
-源码参考: https://github.com/DIYgod/RSSHub/blob/master/lib/routes/xueqiu/stock-comments.tsx
+当东方财富不可用时，可切换到RSSHub方案（需要可访问的RSSHub实例）。
 """
 
 import os
@@ -17,11 +13,9 @@ import re
 import time
 import argparse
 import urllib.request
-import urllib.error
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 # Configuration
 OUTPUT_BASE = Path("~/.openclaw/workspace/syncthing/raw").expanduser()
@@ -31,8 +25,9 @@ API_CONFIG_PATHS = [
     Path("~/.openclaw/api-config.json").expanduser(),
 ]
 
-# RSSHub配置
-RSSHUB_BASE = "https://rsshub.pandaponds"
+# 东方财富API (公开，无需登录)
+EASTMONEY_SEARCH_API = "https://searchapi.eastmoney.com/api/suggest/get"
+EASTMONEY_NOTICE_API = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 
 def load_api_config():
@@ -104,226 +99,214 @@ def trigger_nas_sync():
         return False
 
 
-def fetch_rss_feed(feed_url, timeout=30):
+def search_stock_code(stock_name):
     """
-    Fetch RSS feed from RSSHub.
+    搜索股票代码
     
     Args:
-        feed_url: RSSHub feed URL
-        timeout: Request timeout in seconds
+        stock_name: 股票名称或代码
     
     Returns:
-        list: RSS items, or None if failed
+        tuple: (股票代码, 股票名称, 市场) 或 (None, None, None)
     """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-    }
-    
     try:
-        req = urllib.request.Request(feed_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            content = response.read().decode('utf-8')
+        params = {
+            'input': stock_name,
+            'type': '14',
+            'count': '5',
+        }
+        
+        url = f"{EASTMONEY_SEARCH_API}?{urllib.parse.urlencode(params)}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': 'https://www.eastmoney.com/',
+        }
+        
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode('utf-8'))
             
-            # Parse XML
-            root = ET.fromstring(content)
+            if data.get('QuotationCodeTable', {}).get('Data'):
+                stock = data['QuotationCodeTable']['Data'][0]
+                code = stock.get('Code')
+                name = stock.get('Name')
+                market = stock.get('SecurityTypeName')
+                return code, name, market
             
-            # Extract items
-            items = []
-            channel = root.find('channel')
-            if channel is not None:
-                for item in channel.findall('item'):
-                    entry = {
-                        'title': item.findtext('title', ''),
-                        'link': item.findtext('link', ''),
-                        'description': item.findtext('description', ''),
-                        'pubDate': item.findtext('pubDate', ''),
-                        'author': item.findtext('author', ''),
-                    }
-                    items.append(entry)
-            
-            return items
-    except urllib.error.URLError as e:
-        print(f"[ERROR] RSS fetch failed: {e}", file=sys.stderr)
-        return None
-    except ET.ParseError as e:
-        print(f"[ERROR] XML parse failed: {e}", file=sys.stderr)
-        return None
+            return None, None, None
     except Exception as e:
-        print(f"[ERROR] Unexpected error: {e}", file=sys.stderr)
-        return None
+        print(f"[ERROR] Search failed: {e}")
+        return None, None, None
 
 
-def parse_stock_info_items(items):
+def fetch_stock_announcements(stock_code, max_items=20):
     """
-    Parse stock info items (announcements/bulletins).
+    获取股票公告和财务数据
     
     Args:
-        items: RSS items from stock_info feed
+        stock_code: 股票代码
+        max_items: 最大获取条数
     
     Returns:
-        list: Parsed announcement items
+        list: 公告/财务数据列表
     """
     announcements = []
     
-    for item in items:
-        title = item.get('title', '')
-        link = item.get('link', '')
-        description = item.get('description', '')
-        pub_date = item.get('pubDate', '')
-        
-        # Parse date
-        date_str = ""
-        if pub_date:
-            try:
-                # RSS date format: Mon, 06 Jan 2026 10:00:00 GMT
-                dt = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
-                dt = dt.astimezone(timezone(timedelta(hours=8)))
-                date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
-                date_str = pub_date
-        
-        announcement = {
-            'title': title,
-            'link': link,
-            'description': description,
-            'date': date_str,
-            'type': 'announcement',
+    try:
+        # 东方财富财务数据API (已验证可用)
+        params = {
+            'sortColumns': 'UPDATE_DATE,SECURITY_CODE',
+            'sortTypes': '-1,-1',
+            'pageSize': max_items,
+            'pageNumber': 1,
+            'reportName': 'RPT_FCI_PERFORMANCEE',
+            'columns': 'ALL',
+            'source': 'WEB',
+            'client': 'WEB',
+            'filter': f'(SECURITY_CODE="{stock_code}")',
         }
-        announcements.append(announcement)
-    
-    return announcements
+        
+        url = f"{EASTMONEY_NOTICE_API}?{urllib.parse.urlencode(params)}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': 'https://data.eastmoney.com/notices/',
+        }
+        
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            
+            if data.get('result', {}).get('data'):
+                for item in data['result']['data']:
+                    # 构建标题
+                    report_type = item.get('DATATYPE', '')
+                    year = item.get('REPORT_DATE', '')[:4] if item.get('REPORT_DATE') else ''
+                    title = f"{year}年 {report_type}" if year and report_type else report_type
+                    
+                    # 构建描述
+                    desc_parts = []
+                    if item.get('BASIC_EPS'):
+                        desc_parts.append(f"每股收益: {item['BASIC_EPS']}")
+                    if item.get('TOTAL_OPERATE_INCOME'):
+                        income = item['TOTAL_OPERATE_INCOME'] / 100000000
+                        desc_parts.append(f"营业收入: {income:.2f}亿")
+                    if item.get('PARENT_NETPROFIT'):
+                        profit = item['PARENT_NETPROFIT'] / 100000000
+                        desc_parts.append(f"净利润: {profit:.2f}亿")
+                    if item.get('WEIGHTAVG_ROE'):
+                        desc_parts.append(f"净资产收益率: {item['WEIGHTAVG_ROE']}%")
+                    
+                    announcement = {
+                        'title': title or '财务报告',
+                        'date': item.get('NOTICE_DATE', item.get('UPDATE_DATE', '')),
+                        'type': report_type or '财务数据',
+                        'description': '\n'.join(desc_parts),
+                        'url': f"https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/Index?type=web&code={stock_code}",
+                    }
+                    announcements.append(announcement)
+        
+        return announcements
+    except Exception as e:
+        print(f"[ERROR] Fetch announcements failed: {e}")
+        return []
 
 
-def parse_stock_comments_items(items):
+def fetch_stock_discussions(stock_code, max_items=20):
     """
-    Parse stock comments items (discussions).
+    获取股票讨论 (使用股吧数据)
     
     Args:
-        items: RSS items from stock_comments feed
+        stock_code: 股票代码
+        max_items: 最大获取条数
     
     Returns:
-        list: Parsed discussion items
+        list: 讨论列表
     """
     discussions = []
     
-    for item in items:
-        title = item.get('title', '')
-        link = item.get('link', '')
-        description = item.get('description', '')
-        pub_date = item.get('pubDate', '')
-        author = item.get('author', '未知用户')
-        
-        # Parse date
-        date_str = ""
-        if pub_date:
-            try:
-                dt = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
-                dt = dt.astimezone(timezone(timedelta(hours=8)))
-                date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
-                date_str = pub_date
-        
-        # Clean HTML from description
-        desc_text = re.sub(r'<[^>]+>', '', description)
-        desc_text = desc_text.replace('&nbsp;', ' ')
-        desc_text = desc_text.replace('&lt;', '<')
-        desc_text = desc_text.replace('&gt;', '>')
-        desc_text = desc_text.replace('&amp;', '&')
-        
-        discussion = {
-            'title': title,
-            'link': link,
-            'description': desc_text,
-            'date': date_str,
-            'author': author,
-            'type': 'discussion',
-        }
-        discussions.append(discussion)
-    
-    return discussions
-
-
-def download_file(url, file_name, output_dir):
-    """
-    Download file from URL to multimedia directory.
-    
-    Args:
-        url: File URL
-        file_name: File name
-        output_dir: Output directory
-    
-    Returns:
-        Path: Downloaded file path, or None if failed
-    """
     try:
-        multimedia_path = Path(output_dir)
-        multimedia_path.mkdir(parents=True, exist_ok=True)
+        # 东方财富股吧API
+        url = f"https://guba.eastmoney.com/api/taobaolst"
+        params = {
+            'type': '1',
+            'code': stock_code,
+            'page': '1',
+            'size': max_items,
+        }
         
-        safe_name = re.sub(r'[<>":/\\|?*]', '_', file_name)
-        file_path = multimedia_path / safe_name
+        full_url = f"{url}?{urllib.parse.urlencode(params)}"
         
-        if file_path.exists():
-            print(f"[INFO] File already exists, skipping: {safe_name}")
-            return str(file_path)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': f'https://guba.eastmoney.com/list,{stock_code}.html',
+        }
         
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        req = urllib.request.Request(url, headers=headers)
+        req = urllib.request.Request(full_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            
+            if data.get('re', []):
+                for item in data['re']:
+                    discussion = {
+                        'title': item.get('title', ''),
+                        'author': item.get('author', ''),
+                        'content': item.get('content', ''),
+                        'date': item.get('post_publish_time', ''),
+                        'url': item.get('post_id', ''),
+                    }
+                    discussions.append(discussion)
         
-        with urllib.request.urlopen(req, timeout=60) as response:
-            with open(file_path, 'wb') as f:
-                f.write(response.read())
-        
-        print(f"[SUCCESS] Downloaded: {safe_name} ({file_path.stat().st_size} bytes)")
-        return str(file_path)
+        return discussions
     except Exception as e:
-        print(f"[WARN] Download failed: {e}")
-        return None
+        print(f"[ERROR] Fetch discussions failed: {e}")
+        return []
 
 
-def save_to_markdown(announcements, discussions, stock_name, symbol, output_dir):
+def save_to_markdown(announcements, discussions, stock_name, stock_code, output_dir):
     """
-    Save announcements and discussions to Markdown file.
+    保存到Markdown文件
     
     Args:
-        announcements: List of announcement items
-        discussions: List of discussion items
-        stock_name: Stock name
-        symbol: Stock symbol
-        output_dir: Output directory
+        announcements: 公告列表
+        discussions: 讨论列表
+        stock_name: 股票名称
+        stock_code: 股票代码
+        output_dir: 输出目录
     
     Returns:
-        Path: Saved file path
+        Path: 保存的文件路径
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Build filename
+    # 构建文件名
     today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
     safe_name = re.sub(r'[<>":/\\|?*]', '_', stock_name)
-    filename = f"{today}_{safe_name}_{symbol}_雪球.md"
+    filename = f"{today}_{safe_name}_{stock_code}_雪球.md"
     file_path = output_path / filename
     
-    # Build markdown content
+    # 构建Markdown内容
     now = datetime.now(timezone(timedelta(hours=8)))
     
     markdown = f"""---
-title: {stock_name}({symbol}) - 雪球信息
+title: {stock_name}({stock_code}) - 股票信息
 date: {today}
-source: xueqiu.com via RSSHub
-symbol: {symbol}
+source: eastmoney.com
+symbol: {stock_code}
 ---
 
-# {stock_name}({symbol}) - 雪球信息
+# {stock_name}({stock_code}) - 股票信息
 
 **获取时间**: {now.strftime('%Y-%m-%d %H:%M:%S')}
-**数据来源**: [雪球网](https://xueqiu.com/S/{symbol})
-**公告数量**: {len(announcements)} 条
+**数据来源**: [东方财富](https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/Index?type=web&code={stock_code})
+**公告/财报数量**: {len(announcements)} 条
 **讨论数量**: {len(discussions)} 条
 
 ---
 
-## 📢 公告
+## 📢 公告/财务报告
 
 """
     
@@ -331,10 +314,11 @@ symbol: {symbol}
         for item in announcements:
             markdown += f"""### {item['title']}
 
-**时间**: {item['date']}
-**链接**: [{item['link']}]({item['link']})
+**时间**: {item['date']} | **类型**: {item['type']}
 
 {item['description']}
+
+**链接**: [{item['url']}]({item['url']})
 
 ---
 
@@ -346,12 +330,15 @@ symbol: {symbol}
     
     if discussions:
         for item in discussions:
+            # 清理HTML标签
+            content = re.sub(r'<[^>]+>', '', item.get('content', ''))
+            content = content.replace('&nbsp;', ' ')
+            
             markdown += f"""### {item['title']}
 
 **作者**: {item['author']} | **时间**: {item['date']}
-**链接**: [{item['link']}]({item['link']})
 
-{item['description']}
+{content}
 
 ---
 
@@ -359,7 +346,7 @@ symbol: {symbol}
     else:
         markdown += "*暂无讨论*\n\n"
     
-    # Write file
+    # 写入文件
     file_path.write_text(markdown, encoding='utf-8')
     
     print(f"[SUCCESS] Saved: {file_path}")
@@ -367,66 +354,70 @@ symbol: {symbol}
 
 
 def main():
-    parser = argparse.ArgumentParser(description='雪球股票信息获取工具 (RSSHub版)')
-    parser.add_argument('--symbol', type=str, required=True, help='股票代码（如 SH002595）')
+    parser = argparse.ArgumentParser(description='雪球股票信息获取工具 (东方财富方案)')
+    parser.add_argument('--symbol', type=str, required=True, help='股票代码（如 002595）或名称（如 豪迈科技）')
     parser.add_argument('--name', type=str, help='股票名称（可选）')
     parser.add_argument('--output', type=str, default=str(OUTPUT_BASE), help='输出目录')
-    parser.add_argument('--rsshub', type=str, default=RSSHUB_BASE, help='RSSHub地址')
+    parser.add_argument('--max-items', type=int, default=20, help='最大获取条数（默认20）')
     
     args = parser.parse_args()
     
-    symbol = args.symbol
-    stock_name = args.name or symbol
+    input_value = args.symbol
+    stock_name = args.name
     output_dir = args.output
-    rsshub_base = args.rsshub
+    max_items = args.max_items
     
     print(f"=" * 60)
-    print(f"雪球股票信息获取 (RSSHub)")
+    print(f"雪球股票信息获取 (东方财富方案)")
     print(f"=" * 60)
-    print(f"股票代码: {symbol}")
+    
+    # 判断输入是代码还是名称
+    if input_value.isdigit():
+        stock_code = input_value
+        if not stock_name:
+            # 尝试搜索名称
+            _, found_name, _ = search_stock_code(stock_code)
+            if found_name:
+                stock_name = found_name
+            else:
+                stock_name = stock_code
+        print(f"股票代码: {stock_code}")
+    else:
+        # 搜索股票代码
+        print(f"正在搜索: {input_value}")
+        stock_code, found_name, market = search_stock_code(input_value)
+        if not stock_code:
+            print(f"[ERROR] 未找到股票: {input_value}")
+            sys.exit(1)
+        stock_name = input_value
+        print(f"搜索结果: {found_name} ({stock_code}) - {market}")
+    
     print(f"股票名称: {stock_name}")
     print(f"输出目录: {output_dir}")
-    print(f"RSSHub: {rsshub_base}")
     print(f"=" * 60)
     
-    # Fetch stock info (announcements)
-    info_url = f"{rsshub_base}/xueqiu/stock_info/{symbol}"
-    print(f"\n[INFO] Fetching announcements from: {info_url}")
-    info_items = fetch_rss_feed(info_url)
+    # 获取公告
+    print(f"\n[INFO] 获取公告...")
+    announcements = fetch_stock_announcements(stock_code, max_items)
+    print(f"[INFO] 获取到 {len(announcements)} 条公告")
     
-    if info_items is None:
-        print("[WARN] Failed to fetch announcements")
-        info_items = []
-    else:
-        print(f"[INFO] Fetched {len(info_items)} announcements")
+    # 获取讨论
+    print(f"\n[INFO] 获取讨论...")
+    discussions = fetch_stock_discussions(stock_code, max_items)
+    print(f"[INFO] 获取到 {len(discussions)} 条讨论")
     
-    announcements = parse_stock_info_items(info_items)
-    
-    # Fetch stock comments (discussions)
-    comments_url = f"{rsshub_base}/xueqiu/stock_comments/{symbol}"
-    print(f"\n[INFO] Fetching discussions from: {comments_url}")
-    comments_items = fetch_rss_feed(comments_url)
-    
-    if comments_items is None:
-        print("[WARN] Failed to fetch discussions")
-        comments_items = []
-    else:
-        print(f"[INFO] Fetched {len(comments_items)} discussions")
-    
-    discussions = parse_stock_comments_items(comments_items)
-    
-    # Save to file
+    # 保存到文件
     if announcements or discussions:
-        file_path = save_to_markdown(announcements, discussions, stock_name, symbol, output_dir)
+        file_path = save_to_markdown(announcements, discussions, stock_name, stock_code, output_dir)
         
-        # Send notification
+        # 发送通知
         gotify_notify(
             f"雪球: {stock_name}",
             f"获取 {len(announcements)} 条公告, {len(discussions)} 条讨论\n{file_path}",
             priority=5
         )
         
-        # Trigger NAS sync
+        # 触发NAS同步
         trigger_nas_sync()
         
         print(f"\n" + "=" * 60)
@@ -436,10 +427,10 @@ def main():
         print(f"文件: {file_path}")
         print(f"=" * 60)
     else:
-        print("\n[WARN] No data fetched")
+        print("\n[WARN] 未获取到任何数据")
         gotify_notify(
             f"雪球: {stock_name} - 获取失败",
-            "未能获取任何数据，请检查RSSHub服务状态",
+            "未能获取任何数据",
             priority=8
         )
 

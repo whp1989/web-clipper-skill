@@ -1,32 +1,26 @@
 ---
 name: web-clipper-xueqiu
-description: 雪球股票信息获取工具。通过RSSHub获取指定股票的公告和讨论信息，保存为Markdown文件。Use when the user mentions 雪球, xueqiu, 股票讨论, 股票公告, or requests to fetch stock information from xueqiu.com.
+description: 雪球股票信息获取工具。通过东方财富公开API获取指定股票的财务报告和公告信息，保存为Markdown文件。Use when the user mentions 雪球, xueqiu, 股票讨论, 股票公告, or requests to fetch stock information.
 ---
 
 # Web Clipper - Xueqiu Stock Sub-Skill
 
 ## Purpose
 
-通过RSSHub获取雪球网(xueqiu.com)上指定股票的公告和讨论信息，保存为Markdown文件到本地syncthing-synced文件夹。
+通过东方财富公开API获取股票的财务报告和公告信息，保存为Markdown文件到本地syncthing-synced文件夹。
 
 ## When to Use
 
 Trigger this sub-skill when:
 - User says **"雪球"**, **"xueqiu"**, **"股票讨论"**, **"股票公告"**
-- User requests to fetch stock information from xueqiu.com
+- User requests to fetch stock information
 - User mentions specific stock name or symbol
 
-## RSSHub Service
+## Data Source
 
-**注意**: 需要使用自建的RSSHub服务，地址为 `https://rsshub.pandaponds`
-
-**路由**:
-- 股票公告: `/xueqiu/stock_info/{symbol}`
-- 股票讨论: `/xueqiu/stock_comments/{symbol}`
-
-**示例**:
-- `https://rsshub.pandaponds/xueqiu/stock_info/SH002595`
-- `https://rsshub.pandaponds/xueqiu/stock_comments/SH002595`
+**东方财富 (eastmoney.com)** - 公开API，无需登录
+- 财务报告：年报、季报数据
+- 关键指标：每股收益、营业收入、净利润、净资产收益率
 
 ## Script
 
@@ -34,7 +28,7 @@ Use `scripts/xueqiu_stock.py` for the fetching operation.
 
 ```bash
 python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_stock.py \
-  --symbol "SH002595" \
+  --symbol "002595" \
   --name "豪迈科技" \
   --output "/path/to/output"
 ```
@@ -43,10 +37,10 @@ python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_stock.py \
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `symbol` | ✅ | 股票代码（如 SH002595, SZ000001） |
-| `name` | ❌ | 股票名称（用于文件名） |
+| `symbol` | ✅ | 股票代码（如 002595）或名称（如 豪迈科技） |
+| `name` | ❌ | 股票名称（可选，自动搜索） |
 | `output` | ❌ | 输出目录（默认: syncthing/raw/YYYY-MM-DD） |
-| `rsshub` | ❌ | RSSHub地址（默认: https://rsshub.pandaponds） |
+| `max-items` | ❌ | 最大获取条数（默认20） |
 
 ## Output Location
 
@@ -55,49 +49,43 @@ python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_stock.py \
 
 ## Content Structure
 
-生成的Markdown包含两个部分：
-1. **📢 公告** - 公司公告、财报等信息
-2. **💬 讨论** - 用户讨论、评论等信息
+生成的Markdown包含：
+1. **📢 公告/财务报告** - 年报、季报等财务数据
+2. **💬 讨论** - 股吧讨论（当前不可用）
 
 ## Behavior Rules
 
 - **Auto-trigger**: When "雪球" or "xueqiu" keyword is detected
 - **Gotify notification**: Sends notification after successful fetch
 - **NAS sync**: Automatically triggers NAS sync after successful fetch
-- **Error handling**: If RSSHub is unreachable, sends error notification
+- **Error handling**: If API fails, sends error notification
 
 ## Example Usage
 
 ```bash
-# 获取豪迈科技的公告和讨论
+# 通过股票代码获取
 python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_stock.py \
-  --symbol "SH002595" \
+  --symbol "002595" \
   --name "豪迈科技"
 
-# 使用自定义RSSHub地址
+# 通过股票名称获取（自动搜索代码）
 python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_stock.py \
-  --symbol "SH002595" \
-  --name "豪迈科技" \
-  --rsshub "https://your-rsshub-instance.com"
+  --symbol "豪迈科技"
 ```
 
 ## GitHub Repository
 
 Same as main skill: https://github.com/whp1989/web-clipper-skill
 
-## RSSHub Source Reference
-
-- Stock comments: https://github.com/DIYgod/RSSHub/blob/master/lib/routes/xueqiu/stock-comments.tsx
-- Stock info: https://github.com/DIYgod/RSSHub/blob/master/lib/routes/xueqiu/stock-info.ts
-
 ## Future Enhancements
 
+- Support for real-time stock announcements
+- Support for stock discussion forums
 - Support for multiple stocks batch fetch
-- Support for historical data range selection
 - Integration with stock price data
 
 ## Limitations
 
-- Requires accessible RSSHub instance (rsshub.pandaponds)
-- RSSHub must have xueqiu routes enabled
-- Network connectivity to RSSHub required
+- 讨论数据当前不可用（东方财富股吧API限制）
+- 主要提供财务报告数据
+- 数据更新频率取决于东方财富API
