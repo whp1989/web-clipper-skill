@@ -11,20 +11,19 @@ description: Clip web articles to local Markdown files with images. Use when the
 |---------|-------|--------|---------|
 | URL provided | Main clipper | `clipper.py` | Fetch and save web articles |
 | "归档" keyword | Archive | `archive.py` | Save user-provided content |
-| "雪球" or "xueqiu" keyword | Xueqiu Stock | `xueqiu_stock.py` | Fetch stock discussions from xueqiu.com |
+| "雪球" or "xueqiu" keyword | Xueqiu Stock | `xueqiu_camofox.py` | Fetch stock discussions from xueqiu.com |
 
 ## Xueqiu Stock Sub-Skill
 
 When user says "雪球" or "xueqiu" or requests stock information:
 
 ```bash
-python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_stock.py \
+python3 ~/.openclaw/skills/web-clipper/scripts/xueqiu_camofox.py \
   --symbol "STOCK_CODE" \
-  --name "STOCK_NAME" \
-  --cookie "YOUR_COOKIE"  # Required for first use
+  --name "STOCK_NAME"
 ```
 
-**Note:** Xueqiu.com requires login cookie. See `XUEQIU.md` for details.
+**Note:** Requires camofox-browser service running. See `XUEQIU.md` for details.
 
 ## Archive Sub-Skill
 

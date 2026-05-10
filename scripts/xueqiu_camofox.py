@@ -89,7 +89,7 @@ def camofox_request(method, path, data=None):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with urllib.request.urlopen(req, timeout=120) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         print(f"[ERROR] HTTP {e.code}: {e.read().decode('utf-8')}")
@@ -97,6 +97,39 @@ def camofox_request(method, path, data=None):
     except Exception as e:
         print(f"[ERROR] Request failed: {e}")
         return None
+
+
+def import_cookies():
+    """导入雪球 Cookie"""
+    cookie_file = Path('/tmp/xueqiu_cookies.json')
+    if not cookie_file.exists():
+        print("[WARN] Cookie 文件不存在，跳过导入")
+        return False
+    
+    try:
+        with open(cookie_file, 'r') as f:
+            cookies = json.load(f)
+        
+        # 添加必要的字段
+        for c in cookies:
+            c['sameSite'] = 'Lax'
+            c['httpOnly'] = False
+            c['secure'] = True
+        
+        # 使用 camofox API 设置 cookies
+        result = camofox_request('POST', '/sessions/xueqiu/cookies', {
+            'cookies': cookies
+        })
+        
+        if result and result.get('ok'):
+            print(f"[INFO] Cookie 导入成功: {result.get('count', 0)} 个")
+            return True
+        else:
+            print("[WARN] Cookie 导入失败")
+            return False
+    except Exception as e:
+        print(f"[WARN] Cookie 导入异常: {e}")
+        return False
 
 
 def parse_discussions_from_snapshot(snapshot):
@@ -158,7 +191,10 @@ def fetch_stock_discussions(symbol, name, count=20):
     """
     print(f"[INFO] 获取 {name}({symbol}) 的讨论...")
     
-    # 1. 创建 tab 访问雪球页面
+    # 1. 导入 Cookie（如果存在）
+    import_cookies()
+    
+    # 2. 创建 tab 访问雪球页面
     result = camofox_request('POST', '/tabs', {
         'userId': 'xueqiu',
         'sessionKey': symbol,
@@ -172,19 +208,22 @@ def fetch_stock_discussions(symbol, name, count=20):
     tab_id = result['tabId']
     print(f"[INFO] Tab created: {tab_id}")
     
-    # 2. 等待页面加载
-    time.sleep(10)
+    # 3. 等待页面加载（增加等待时间）
+    print("[INFO] 等待页面加载...")
+    time.sleep(20)
     
-    # 3. 滚动页面触发懒加载
-    for i in range(5):
+    # 4. 滚动页面触发懒加载
+    print("[INFO] 滚动页面...")
+    for i in range(8):
         camofox_request('POST', f'/tabs/{tab_id}/scroll', {
             'userId': 'xueqiu',
             'direction': 'down',
-            'amount': 1000
+            'amount': 1200
         })
-        time.sleep(3)
+        time.sleep(5)
     
-    # 4. 获取页面快照
+    # 5. 获取页面快照
+    print("[INFO] 获取页面快照...")
     snapshot = camofox_request('GET', f'/tabs/{tab_id}/snapshot?userId=xueqiu')
     
     if not snapshot:
@@ -192,11 +231,12 @@ def fetch_stock_discussions(symbol, name, count=20):
         return []
     
     print(f"[INFO] 快照获取成功，URL: {snapshot.get('url', 'N/A')}")
+    print(f"[INFO] 快照长度: {snapshot.get('totalChars', 0)} 字符")
     
-    # 5. 解析讨论内容
+    # 6. 解析讨论内容
     discussions = parse_discussions_from_snapshot(snapshot)
     
-    # 6. 关闭 tab
+    # 7. 关闭 tab
     camofox_request('DELETE', f'/tabs/{tab_id}', {'userId': 'xueqiu'})
     
     return discussions

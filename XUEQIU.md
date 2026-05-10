@@ -8,6 +8,7 @@
 
 1. **camofox-browser 服务** 必须正在运行
 2. **Xvfb** 虚拟显示已启动
+3. **Cookie** 已导入（部分股票需要登录）
 
 ### 启动 camofox 服务
 
@@ -45,6 +46,15 @@ get display() {
     }
     return this._display;
 }
+```
+
+### 导入 Cookie
+
+```bash
+# 设置 Cookie 到 camofox
+curl -s -X POST http://localhost:9377/sessions/xueqiu/cookies \
+  -H 'Content-Type: application/json' \
+  -d '{"cookies": [...]}'
 ```
 
 ## 使用方法
@@ -142,9 +152,10 @@ CXL内存扩展技术在AI数据中心的核心价值...
 **现象**：快照获取成功但内容为空
 
 **解决**：
-1. 增加等待时间：`time.sleep(15)`
-2. 多次滚动触发懒加载
+1. 增加等待时间（脚本已设置为20秒）
+2. 多次滚动触发懒加载（脚本已设置8次滚动）
 3. 检查是否需要登录（部分股票需要）
+4. 检查 Cookie 是否有效
 
 ### 问题3：获取的讨论数量少
 
@@ -158,9 +169,10 @@ CXL内存扩展技术在AI数据中心的核心价值...
 ## 注意事项
 
 1. **camofox 服务需要保持运行**，预热后才能快速响应
-2. **部分股票需要登录**才能查看讨论
+2. **部分股票需要登录**才能查看讨论（需要有效 Cookie）
 3. **雪球页面是 SPA**，需要等待 JavaScript 渲染
 4. **频繁请求可能触发限制**，建议控制请求频率
+5. **Cookie 可能过期**，需要定期更新
 
 ## 更新日志
 
@@ -168,3 +180,4 @@ CXL内存扩展技术在AI数据中心的核心价值...
 - 初始版本，使用 camofox-browser 绕过 WAF
 - 支持获取股票讨论并保存为 Markdown
 - 集成 NAS 同步和 Gotify 通知
+- 支持 Cookie 导入（用于需要登录的股票）
