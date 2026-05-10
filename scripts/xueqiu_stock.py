@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-雪球股票信息获取工具 - xueqiu-stock
-获取指定股票的公告和讨论信息，保存为Markdown文件。
+雪球股票信息获取工具 - xueqiu-stock (RSSHub版本)
+通过RSSHub获取指定股票的公告和讨论信息，保存为Markdown文件。
 
-注意：雪球网需要登录才能获取讨论和公告信息。
-首次使用需要提供Cookie，后续会自动保存和刷新Cookie。
+RSSHub路由:
+- 股票信息: https://rsshub.pandaponds/xueqiu/stock_info/{symbol}
+- 股票讨论: https://rsshub.pandaponds/xueqiu/stock_comments/{symbol}
+
+源码参考: https://github.com/DIYgod/RSSHub/blob/master/lib/routes/xueqiu/stock-comments.tsx
 """
 
 import os
@@ -13,310 +16,432 @@ import json
 import re
 import time
 import argparse
+import urllib.request
+import urllib.error
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import requests
+import xml.etree.ElementTree as ET
 
 # Configuration
 OUTPUT_BASE = Path("~/.openclaw/workspace/syncthing/raw").expanduser()
 MULTIMEDIA_DIR = OUTPUT_BASE / "multimedia"
-COOKIE_FILE = Path("~/.openclaw/workspace/.xueqiu_cookies.json").expanduser()
+API_CONFIG_PATHS = [
+    Path("~/.openclaw/workspace/.openclaw/api-config.json").expanduser(),
+    Path("~/.openclaw/api-config.json").expanduser(),
+]
 
-# 雪球API配置
-XUEQIU_HOME = "https://xueqiu.com"
-XUEQIU_API_BASE = "https://xueqiu.com/query/v1/symbol/search/status"
-
-# 请求头模板
-HEADERS_TEMPLATE = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Referer": "https://xueqiu.com/",
-    "Origin": "https://xueqiu.com",
-}
+# RSSHub配置
+RSSHUB_BASE = "https://rsshub.pandaponds"
 
 
-def save_cookies(cookies):
-    """保存Cookie到文件"""
+def load_api_config():
+    """Load API config from local file."""
+    for config_path in API_CONFIG_PATHS:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                continue
+    return {}
+
+
+def gotify_notify(title, message, priority=5):
+    """Send Gotify notification using local config."""
+    config = load_api_config()
+    server = config.get('gotify_server')
+    token = config.get('gotify_token')
+    
+    if not server or not token:
+        print(f"  ⚠️ Gotify not configured", file=sys.stderr)
+        return False
+    
     try:
-        COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cookies, f, indent=2)
-        print(f"[INFO] Cookie已保存到: {COOKIE_FILE}")
+        url = f"{server}/message?token={token}"
+        data = urllib.parse.urlencode({
+            'title': title,
+            'message': message,
+            'priority': priority
+        }).encode('utf-8')
+        
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            if 'id' in result:
+                print(f"  [Gotify] 通知已发送: {title}", file=sys.stderr)
+                return True
+            else:
+                print(f"  [Gotify] 发送失败", file=sys.stderr)
+                return False
     except Exception as e:
-        print(f"[WARN] 保存Cookie失败: {e}")
+        print(f"  [Gotify] 异常: {e}", file=sys.stderr)
+        return False
 
 
-def load_cookies():
-    """从文件加载Cookie"""
-    if COOKIE_FILE.exists():
-        try:
-            with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[WARN] 加载Cookie失败: {e}")
-    return None
+def trigger_nas_sync():
+    """Trigger NAS sync after successful fetch."""
+    print("🔄 Triggering NAS sync...", file=sys.stderr)
+    try:
+        import subprocess
+        sync_result = subprocess.run(
+            ['bash', '/root/.openclaw/workspace/sync-wrapper.sh'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd='/root/.openclaw/workspace'
+        )
+        if sync_result.returncode == 0:
+            print("✅ NAS sync triggered", file=sys.stderr)
+            return True
+        else:
+            print(f"⚠️ NAS sync failed: {sync_result.stderr[:200]}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"⚠️ NAS sync trigger failed: {e}", file=sys.stderr)
+        return False
 
 
-def get_session_with_cookies(provided_cookie=None):
+def fetch_rss_feed(feed_url, timeout=30):
     """
-    获取带Cookie的session
+    Fetch RSS feed from RSSHub.
     
     Args:
-        provided_cookie: 用户提供的Cookie字符串（可选）
+        feed_url: RSSHub feed URL
+        timeout: Request timeout in seconds
     
     Returns:
-        requests.Session: 带Cookie的session，或None
+        list: RSS items, or None if failed
     """
-    session = requests.Session()
-    session.headers.update(HEADERS_TEMPLATE)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+    }
     
-    # 如果提供了Cookie，使用提供的
-    if provided_cookie:
-        print("[INFO] 使用用户提供的Cookie")
-        session.headers.update({'Cookie': provided_cookie})
-        # 解析并保存Cookie
-        cookies = {}
-        for item in provided_cookie.split(';'):
-            if '=' in item:
-                key, value = item.strip().split('=', 1)
-                cookies[key] = value
-        save_cookies(cookies)
-        return session
-    
-    # 尝试加载保存的Cookie
-    saved_cookies = load_cookies()
-    if saved_cookies:
-        print("[INFO] 使用保存的Cookie")
-        session.cookies.update(saved_cookies)
-        return session
-    
-    # 尝试访问首页获取临时Cookie（通常无效，需要登录）
     try:
-        print("[INFO] 正在获取临时Cookie（访问雪球首页）...")
-        resp = session.get(XUEQIU_HOME, timeout=15)
-        resp.raise_for_status()
-        print("[INFO] 临时Cookie获取成功（可能无法访问讨论数据）")
-        return session
+        req = urllib.request.Request(feed_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            content = response.read().decode('utf-8')
+            
+            # Parse XML
+            root = ET.fromstring(content)
+            
+            # Extract items
+            items = []
+            channel = root.find('channel')
+            if channel is not None:
+                for item in channel.findall('item'):
+                    entry = {
+                        'title': item.findtext('title', ''),
+                        'link': item.findtext('link', ''),
+                        'description': item.findtext('description', ''),
+                        'pubDate': item.findtext('pubDate', ''),
+                        'author': item.findtext('author', ''),
+                    }
+                    items.append(entry)
+            
+            return items
+    except urllib.error.URLError as e:
+        print(f"[ERROR] RSS fetch failed: {e}", file=sys.stderr)
+        return None
+    except ET.ParseError as e:
+        print(f"[ERROR] XML parse failed: {e}", file=sys.stderr)
+        return None
     except Exception as e:
-        print(f"[ERROR] 获取Cookie失败: {e}")
+        print(f"[ERROR] Unexpected error: {e}", file=sys.stderr)
         return None
 
 
-def fetch_stock_discussions(session, symbol, max_pages=5):
+def parse_stock_info_items(items):
     """
-    获取股票讨论信息
+    Parse stock info items (announcements/bulletins).
     
     Args:
-        session: 带Cookie的requests.Session
-        symbol: 股票代码（如 SH002595）
-        max_pages: 最大翻页数
+        items: RSS items from stock_info feed
     
     Returns:
-        list: 讨论列表
+        list: Parsed announcement items
+    """
+    announcements = []
+    
+    for item in items:
+        title = item.get('title', '')
+        link = item.get('link', '')
+        description = item.get('description', '')
+        pub_date = item.get('pubDate', '')
+        
+        # Parse date
+        date_str = ""
+        if pub_date:
+            try:
+                # RSS date format: Mon, 06 Jan 2026 10:00:00 GMT
+                dt = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
+                dt = dt.astimezone(timezone(timedelta(hours=8)))
+                date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                date_str = pub_date
+        
+        announcement = {
+            'title': title,
+            'link': link,
+            'description': description,
+            'date': date_str,
+            'type': 'announcement',
+        }
+        announcements.append(announcement)
+    
+    return announcements
+
+
+def parse_stock_comments_items(items):
+    """
+    Parse stock comments items (discussions).
+    
+    Args:
+        items: RSS items from stock_comments feed
+    
+    Returns:
+        list: Parsed discussion items
     """
     discussions = []
     
-    for page in range(1, max_pages + 1):
-        print(f"[INFO] 获取第 {page} 页讨论...")
+    for item in items:
+        title = item.get('title', '')
+        link = item.get('link', '')
+        description = item.get('description', '')
+        pub_date = item.get('pubDate', '')
+        author = item.get('author', '未知用户')
         
-        params = {
-            "count": 10,
-            "comment": 0,
-            "symbol": symbol,
-            "hl": 0,
-            "source": "user",
-            "sort": "time",
-            "page": page,
+        # Parse date
+        date_str = ""
+        if pub_date:
+            try:
+                dt = datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %Z')
+                dt = dt.astimezone(timezone(timedelta(hours=8)))
+                date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                date_str = pub_date
+        
+        # Clean HTML from description
+        desc_text = re.sub(r'<[^>]+>', '', description)
+        desc_text = desc_text.replace('&nbsp;', ' ')
+        desc_text = desc_text.replace('&lt;', '<')
+        desc_text = desc_text.replace('&gt;', '>')
+        desc_text = desc_text.replace('&amp;', '&')
+        
+        discussion = {
+            'title': title,
+            'link': link,
+            'description': desc_text,
+            'date': date_str,
+            'author': author,
+            'type': 'discussion',
         }
-        
-        try:
-            resp = session.get(XUEQIU_API_BASE, params=params, timeout=15)
-            
-            if resp.status_code == 403:
-                print("[WARN] 403 Forbidden，Cookie可能已过期")
-                break
-            
-            resp.raise_for_status()
-            data = resp.json()
-            
-            if data.get("code") != 200:
-                print(f"[WARN] API返回错误: {data.get('message', '未知错误')}")
-                break
-            
-            items = data.get("data", {}).get("items", [])
-            if not items:
-                print("[INFO] 无更多讨论，结束翻页")
-                break
-            
-            for item in items:
-                discussion = {
-                    "id": item.get("id"),
-                    "title": item.get("title", ""),
-                    "text": item.get("text", ""),
-                    "created_at": item.get("created_at"),
-                    "user": item.get("user", {}).get("screen_name", "未知用户"),
-                    "likes": item.get("like_count", 0),
-                    "comments": item.get("reply_count", 0),
-                    "retweets": item.get("retweet_count", 0),
-                }
-                discussions.append(discussion)
-            
-            print(f"[INFO] 第 {page} 页获取 {len(items)} 条讨论")
-            
-            # 添加延迟避免触发风控
-            if page < max_pages:
-                time.sleep(1.5)
-                
-        except Exception as e:
-            print(f"[ERROR] 获取讨论失败: {e}")
-            break
+        discussions.append(discussion)
     
-    print(f"[INFO] 共获取 {len(discussions)} 条讨论")
     return discussions
 
 
-def parse_discussion_to_markdown(discussion):
+def download_file(url, file_name, output_dir):
     """
-    将讨论解析为Markdown格式
+    Download file from URL to multimedia directory.
     
     Args:
-        discussion: 讨论字典
+        url: File URL
+        file_name: File name
+        output_dir: Output directory
     
     Returns:
-        str: Markdown内容
+        Path: Downloaded file path, or None if failed
     """
-    # 清理HTML标签
-    text = discussion["text"]
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.replace('&nbsp;', ' ')
-    text = text.replace('&lt;', '<')
-    text = text.replace('&gt;', '>')
-    text = text.replace('&amp;', '&')
-    
-    # 格式化时间
-    created_at = discussion.get("created_at", "")
-    if created_at:
-        try:
-            dt = datetime.fromtimestamp(created_at / 1000, tz=timezone(timedelta(hours=8)))
-            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-        except:
-            time_str = str(created_at)
-    else:
-        time_str = "未知时间"
-    
-    markdown = f"""### {discussion.get('title', '无标题')}
-
-**作者**: {discussion['user']} | **时间**: {time_str}
-**点赞**: {discussion['likes']} | **评论**: {discussion['comments']} | **转发**: {discussion['retweets']}
-
-{text}
-
----
-
-"""
-    return markdown
+    try:
+        multimedia_path = Path(output_dir)
+        multimedia_path.mkdir(parents=True, exist_ok=True)
+        
+        safe_name = re.sub(r'[<>":/\\|?*]', '_', file_name)
+        file_path = multimedia_path / safe_name
+        
+        if file_path.exists():
+            print(f"[INFO] File already exists, skipping: {safe_name}")
+            return str(file_path)
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        req = urllib.request.Request(url, headers=headers)
+        
+        with urllib.request.urlopen(req, timeout=60) as response:
+            with open(file_path, 'wb') as f:
+                f.write(response.read())
+        
+        print(f"[SUCCESS] Downloaded: {safe_name} ({file_path.stat().st_size} bytes)")
+        return str(file_path)
+    except Exception as e:
+        print(f"[WARN] Download failed: {e}")
+        return None
 
 
-def save_discussions_to_file(discussions, stock_name, symbol, output_dir):
+def save_to_markdown(announcements, discussions, stock_name, symbol, output_dir):
     """
-    保存讨论到Markdown文件
+    Save announcements and discussions to Markdown file.
     
     Args:
-        discussions: 讨论列表
-        stock_name: 股票名称
-        symbol: 股票代码
-        output_dir: 输出目录
+        announcements: List of announcement items
+        discussions: List of discussion items
+        stock_name: Stock name
+        symbol: Stock symbol
+        output_dir: Output directory
     
     Returns:
-        Path: 保存的文件路径
+        Path: Saved file path
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # 构建文件名: {日期}_{股票名称}_{股票代码}.md
-    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-    safe_name = re.sub(r'[<>"/\\|?*]', '_', stock_name)
-    filename = f"{today}_{safe_name}_{symbol}.md"
+    # Build filename
+    today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+    safe_name = re.sub(r'[<>":/\\|?*]', '_', stock_name)
+    filename = f"{today}_{safe_name}_{symbol}_雪球.md"
     file_path = output_path / filename
     
-    # 构建Markdown内容
+    # Build markdown content
     now = datetime.now(timezone(timedelta(hours=8)))
     
     markdown = f"""---
-title: {stock_name}({symbol}) - 雪球讨论
+title: {stock_name}({symbol}) - 雪球信息
 date: {today}
-source: xueqiu.com
+source: xueqiu.com via RSSHub
 symbol: {symbol}
 ---
 
-# {stock_name}({symbol}) - 雪球讨论
+# {stock_name}({symbol}) - 雪球信息
 
 **获取时间**: {now.strftime('%Y-%m-%d %H:%M:%S')}
 **数据来源**: [雪球网](https://xueqiu.com/S/{symbol})
+**公告数量**: {len(announcements)} 条
 **讨论数量**: {len(discussions)} 条
 
 ---
 
+## 📢 公告
+
 """
     
-    for discussion in discussions:
-        markdown += parse_discussion_to_markdown(discussion)
+    if announcements:
+        for item in announcements:
+            markdown += f"""### {item['title']}
+
+**时间**: {item['date']}
+**链接**: [{item['link']}]({item['link']})
+
+{item['description']}
+
+---
+
+"""
+    else:
+        markdown += "*暂无公告*\n\n"
     
-    # 写入文件
+    markdown += "## 💬 讨论\n\n"
+    
+    if discussions:
+        for item in discussions:
+            markdown += f"""### {item['title']}
+
+**作者**: {item['author']} | **时间**: {item['date']}
+**链接**: [{item['link']}]({item['link']})
+
+{item['description']}
+
+---
+
+"""
+    else:
+        markdown += "*暂无讨论*\n\n"
+    
+    # Write file
     file_path.write_text(markdown, encoding='utf-8')
     
-    print(f"[SUCCESS] 已保存: {file_path}")
-    return file_path
+    print(f"[SUCCESS] Saved: {file_path}")
+    return str(file_path)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='雪球股票讨论获取工具')
+    parser = argparse.ArgumentParser(description='雪球股票信息获取工具 (RSSHub版)')
     parser.add_argument('--symbol', type=str, required=True, help='股票代码（如 SH002595）')
     parser.add_argument('--name', type=str, help='股票名称（可选）')
     parser.add_argument('--output', type=str, default=str(OUTPUT_BASE), help='输出目录')
-    parser.add_argument('--max-pages', type=int, default=5, help='最大翻页数（默认5）')
-    parser.add_argument('--cookie', type=str, help='雪球网Cookie字符串（首次使用需要提供）')
+    parser.add_argument('--rsshub', type=str, default=RSSHUB_BASE, help='RSSHub地址')
     
     args = parser.parse_args()
     
     symbol = args.symbol
     stock_name = args.name or symbol
     output_dir = args.output
+    rsshub_base = args.rsshub
     
     print(f"=" * 60)
-    print(f"雪球股票讨论获取")
+    print(f"雪球股票信息获取 (RSSHub)")
     print(f"=" * 60)
     print(f"股票代码: {symbol}")
     print(f"股票名称: {stock_name}")
     print(f"输出目录: {output_dir}")
-    if args.cookie:
-        print(f"Cookie: 用户提供")
+    print(f"RSSHub: {rsshub_base}")
     print(f"=" * 60)
     
-    # 获取Cookie
-    session = get_session_with_cookies(args.cookie)
-    if not session:
-        print("[ERROR] 无法获取Cookie，退出")
-        print("[INFO] 提示: 雪球网需要登录才能获取讨论数据")
-        print("[INFO] 请提供Cookie参数: --cookie 'xq_a_token=xxx; xq_r_token=xxx'")
-        sys.exit(1)
+    # Fetch stock info (announcements)
+    info_url = f"{rsshub_base}/xueqiu/stock_info/{symbol}"
+    print(f"\n[INFO] Fetching announcements from: {info_url}")
+    info_items = fetch_rss_feed(info_url)
     
-    # 获取讨论
-    discussions = fetch_stock_discussions(session, symbol, max_pages=args.max_pages)
+    if info_items is None:
+        print("[WARN] Failed to fetch announcements")
+        info_items = []
+    else:
+        print(f"[INFO] Fetched {len(info_items)} announcements")
     
-    if not discussions:
-        print("[WARN] 未获取到任何讨论")
-        print("[INFO] 可能原因: Cookie无效或已过期，请重新提供Cookie")
-        sys.exit(0)
+    announcements = parse_stock_info_items(info_items)
     
-    # 保存到文件
-    file_path = save_discussions_to_file(discussions, stock_name, symbol, output_dir)
+    # Fetch stock comments (discussions)
+    comments_url = f"{rsshub_base}/xueqiu/stock_comments/{symbol}"
+    print(f"\n[INFO] Fetching discussions from: {comments_url}")
+    comments_items = fetch_rss_feed(comments_url)
     
-    print(f"=" * 60)
-    print(f"完成！共保存 {len(discussions)} 条讨论")
-    print(f"文件路径: {file_path}")
-    print(f"=" * 60)
+    if comments_items is None:
+        print("[WARN] Failed to fetch discussions")
+        comments_items = []
+    else:
+        print(f"[INFO] Fetched {len(comments_items)} discussions")
+    
+    discussions = parse_stock_comments_items(comments_items)
+    
+    # Save to file
+    if announcements or discussions:
+        file_path = save_to_markdown(announcements, discussions, stock_name, symbol, output_dir)
+        
+        # Send notification
+        gotify_notify(
+            f"雪球: {stock_name}",
+            f"获取 {len(announcements)} 条公告, {len(discussions)} 条讨论\n{file_path}",
+            priority=5
+        )
+        
+        # Trigger NAS sync
+        trigger_nas_sync()
+        
+        print(f"\n" + "=" * 60)
+        print(f"完成！")
+        print(f"公告: {len(announcements)} 条")
+        print(f"讨论: {len(discussions)} 条")
+        print(f"文件: {file_path}")
+        print(f"=" * 60)
+    else:
+        print("\n[WARN] No data fetched")
+        gotify_notify(
+            f"雪球: {stock_name} - 获取失败",
+            "未能获取任何数据，请检查RSSHub服务状态",
+            priority=8
+        )
 
 
 if __name__ == "__main__":

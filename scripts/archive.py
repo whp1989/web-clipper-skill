@@ -99,6 +99,80 @@ def generate_title(content):
     return f"archive_{timestamp}"
 
 
+def gotify_notify(title, message, priority=5):
+    """Send Gotify notification using local config."""
+    config_paths = [
+        Path("~/.openclaw/workspace/.openclaw/api-config.json").expanduser(),
+        Path("~/.openclaw/api-config.json").expanduser(),
+    ]
+    
+    config = {}
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    break
+            except:
+                continue
+    
+    server = config.get('gotify_server')
+    token = config.get('gotify_token')
+    
+    if not server or not token:
+        print(f"  ⚠️ Gotify not configured", file=sys.stderr)
+        return False
+    
+    try:
+        import urllib.request
+        import urllib.parse
+        
+        url = f"{server}/message?token={token}"
+        data = urllib.parse.urlencode({
+            'title': title,
+            'message': message,
+            'priority': priority
+        }).encode('utf-8')
+        
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            if 'id' in result:
+                print(f"  [Gotify] 通知已发送: {title}", file=sys.stderr)
+                return True
+            else:
+                print(f"  [Gotify] 发送失败", file=sys.stderr)
+                return False
+    except Exception as e:
+        print(f"  [Gotify] 异常: {e}", file=sys.stderr)
+        return False
+
+
+def trigger_nas_sync():
+    """Trigger NAS sync after successful archive."""
+    print("🔄 Triggering NAS sync...", file=sys.stderr)
+    try:
+        import subprocess
+        sync_result = subprocess.run(
+            ['bash', '/root/.openclaw/workspace/sync-wrapper.sh'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd='/root/.openclaw/workspace'
+        )
+        if sync_result.returncode == 0:
+            print("✅ NAS sync triggered", file=sys.stderr)
+            return True
+        else:
+            print(f"⚠️ NAS sync failed: {sync_result.stderr[:200]}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"⚠️ NAS sync trigger failed: {e}", file=sys.stderr)
+        return False
+
+
 def sanitize_filename(name, max_len=80):
     """Sanitize string for use as filename."""
     sanitized = re.sub(r'[^\w\s-]', '_', name)
@@ -173,23 +247,15 @@ archived: {now.isoformat()}
     
     print(f"✅ Archived: {md_path}", file=sys.stderr)
     
+    # Send Gotify notification
+    gotify_notify(
+        f"归档: {title or '新内容'}",
+        f"已归档到: {md_path}",
+        priority=5
+    )
+    
     # Trigger NAS sync
-    print("🔄 Triggering NAS sync...", file=sys.stderr)
-    try:
-        import subprocess
-        sync_result = subprocess.run(
-            ['bash', '/root/.openclaw/workspace/sync-wrapper.sh'],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd='/root/.openclaw/workspace'
-        )
-        if sync_result.returncode == 0:
-            print("✅ NAS sync triggered", file=sys.stderr)
-        else:
-            print(f"⚠️ NAS sync failed: {sync_result.stderr[:200]}", file=sys.stderr)
-    except Exception as e:
-        print(f"⚠️ NAS sync trigger failed: {e}", file=sys.stderr)
+    trigger_nas_sync()
     
     return str(md_path)
 
