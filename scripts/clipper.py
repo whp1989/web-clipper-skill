@@ -247,6 +247,109 @@ def save_evolution_report(url, html, result, error=None, output_dir=None):
     return diagnosis
 
 
+class ArticleExtractor(HTMLParser):
+    """Extract article content from HTML."""
+    
+    def __init__(self, base_url=None):
+        super().__init__()
+        self.base_url = base_url
+        self.in_title = False
+        self.in_content = False
+        self.in_script = False
+        self.in_style = False
+        self.title = ""
+        self.content = []
+        self.images = []
+        self.current_tag = None
+        self.content_depth = 0
+        self.title_depth = 0
+        
+        # Content containers to look for
+        self.content_classes = ['content', 'article', 'post', 'entry', 'rich_media_content']
+        self.title_tags = ['h1', 'h2', 'title']
+        
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        self.current_tag = tag
+        
+        # Skip script and style
+        if tag in ('script', 'style'):
+            self.in_script = (tag == 'script')
+            self.in_style = (tag == 'style')
+            return
+        
+        # Check for title
+        if tag in self.title_tags:
+            self.in_title = True
+            self.title_depth += 1
+        
+        # Check for content containers
+        class_attr = attrs_dict.get('class', '')
+        if class_attr:
+            for cls in self.content_classes:
+                if cls in class_attr:
+                    self.in_content = True
+                    self.content_depth += 1
+                    break
+        
+        # Collect images
+        if tag == 'img':
+            src = attrs_dict.get('src') or attrs_dict.get('data-src')
+            if src:
+                if src.startswith('//'):
+                    src = 'https:' + src
+                elif src.startswith('/'):
+                    src = urllib.parse.urljoin(self.base_url or '', src)
+                self.images.append((src, attrs_dict.get('alt', '')))
+        
+        # Track content depth for nested divs
+        if self.in_content and tag in ('div', 'section', 'article'):
+            self.content_depth += 1
+    
+    def handle_endtag(self, tag):
+        if tag in ('script', 'style'):
+            self.in_script = False
+            self.in_style = False
+            return
+        
+        if tag in self.title_tags and self.in_title:
+            self.title_depth -= 1
+            if self.title_depth <= 0:
+                self.in_title = False
+                self.title_depth = 0
+        
+        if self.in_content and tag in ('div', 'section', 'article'):
+            self.content_depth -= 1
+            if self.content_depth <= 0:
+                self.in_content = False
+                self.content_depth = 0
+    
+    def handle_data(self, data):
+        if self.in_script or self.in_style:
+            return
+        
+        if self.in_title:
+            self.title += data
+        
+        if self.in_content:
+            self.content.append(data)
+    
+    def get_result(self):
+        title = self.title.strip() if self.title else None
+        content = '\n'.join(self.content).strip() if self.content else None
+        
+        # Also try to find title in meta if not found
+        if not title:
+            # This would need the full HTML, so we'll handle it in the main function
+            pass
+        
+        return {
+            'title': title,
+            'content': content,
+            'images': self.images
+        }
+
+
 # ========== Audio Extraction Functions ==========
 def extract_audio_url(html, url):
     """Extract audio URL from podcast pages (e.g., Xiaoyuzhou FM)."""
@@ -885,6 +988,68 @@ def parse_wechat(html, url):
         'content': full_content,
         'images': []  # Images are embedded in content HTML, will be converted by html_to_markdown
     }
+
+
+def parse_wechat_regex(html, url):
+    """Parse WeChat articles using regex when HTML parser fails."""
+    result = {
+        'title': None,
+        'content': '',
+        'images': []
+    }
+    
+    # Extract title from meta or h1
+    title = ""
+    title_match = re.search(r'<h1[^>]*class="rich_media_title[^"]*"[^>]*>.*?<span[^>]*class="js_title_inner"[^>]*>(.*?)</span>.*?</h1>', html, re.DOTALL | re.IGNORECASE)
+    if not title_match:
+        title_match = re.search(r'<h1[^>]*class="rich_media_title[^"]*"[^>]*>(.*?)</h1>', html, re.DOTALL | re.IGNORECASE)
+    if not title_match:
+        title_match = re.search(r'<h2[^>]*class="rich_media_title[^"]*"[^>]*>(.*?)</h2>', html, re.DOTALL | re.IGNORECASE)
+    if title_match:
+        title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+    
+    if not title:
+        title_match = re.search(r'<meta[^>]*property="og:title"[^>]*content="([^"]*)"', html, re.IGNORECASE)
+        if title_match:
+            title = title_match.group(1).strip()
+    
+    result['title'] = title
+    
+    # Extract content from rich_media_content div
+    content = ""
+    content_match = re.search(r'<div[^>]*class="rich_media_content[^"]*"[^>]*>(.*?)</div>\s*<div[^>]*class="rich_media_tool"', html, re.DOTALL | re.IGNORECASE)
+    if not content_match:
+        content_match = re.search(r'<div[^>]*class="rich_media_content[^"]*"[^>]*>(.*?)</div>\s*<script', html, re.DOTALL | re.IGNORECASE)
+    if not content_match:
+        content_match = re.search(r'<div[^>]*class="rich_media_content[^"]*"[^>]*>(.*?)</div>\s*</div>\s*<div[^>]*class="rich_media_tool"', html, re.DOTALL | re.IGNORECASE)
+    if not content_match:
+        # Try finding the content div more broadly
+        content_match = re.search(r'<div[^>]*class="rich_media_content[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL | re.IGNORECASE)
+    
+    if content_match:
+        content = content_match.group(1)
+        # Clean up content
+        content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        # Remove data-src attributes and convert to src
+        content = re.sub(r'data-src="([^"]*)"', r'src="\1"', content)
+    
+    result['content'] = content
+    
+    # Extract images
+    images = []
+    seen_urls = set()
+    
+    # Find all img tags with data-src or src
+    img_matches = re.findall(r'<img[^>]*(?:data-src|src)=["\']([^"\']+)["\'][^>]*>', html, re.IGNORECASE)
+    for img_url in img_matches:
+        if img_url and img_url not in seen_urls and not img_url.startswith('data:'):
+            seen_urls.add(img_url)
+            images.append((img_url, ''))
+    
+    result['images'] = images
+    
+    return result
 
 
 # ========== Bilibili Parser ==========
@@ -1821,6 +1986,16 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
         
         parsed = extractor.get_result()
         
+        # If generic parser failed, try regex-based extraction for WeChat
+        if not parsed.get('content') or len(parsed.get('content', '')) < 100:
+            if 'mp.weixin.qq.com' in final_url:
+                print("🔧 Trying regex-based WeChat extraction...", file=sys.stderr)
+                wechat_result = parse_wechat_regex(html, final_url)
+                if wechat_result and wechat_result.get('content'):
+                    parsed['title'] = wechat_result.get('title', parsed.get('title'))
+                    parsed['content'] = wechat_result.get('content')
+                    parsed['images'] = wechat_result.get('images', parsed.get('images', []))
+        
         title = meta_title or parsed['title']
         if not title or title in ("Untitled", ""):
             if json_ld and json_ld.get('headline'):
@@ -2102,6 +2277,25 @@ images_count: {len(downloaded_images)}
     md_path.write_text(markdown, encoding='utf-8')
     
     print(f"✅ Saved: {md_path}", file=sys.stderr)
+    
+    # Trigger NAS sync after successful clip
+    if not test_mode:
+        print("🔄 Triggering NAS sync...", file=sys.stderr)
+        try:
+            import subprocess
+            sync_result = subprocess.run(
+                ['bash', '/root/.openclaw/workspace/sync-wrapper.sh'],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd='/root/.openclaw/workspace'
+            )
+            if sync_result.returncode == 0:
+                print("✅ NAS sync triggered", file=sys.stderr)
+            else:
+                print(f"⚠️ NAS sync failed: {sync_result.stderr[:200]}", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠️ NAS sync trigger failed: {e}", file=sys.stderr)
     
     # Send Gotify notification (non-blocking)
     if not test_mode:
