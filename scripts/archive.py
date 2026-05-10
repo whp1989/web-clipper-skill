@@ -188,7 +188,7 @@ def sanitize_filename(name, max_len=80):
     return sanitized
 
 
-def archive_content(content, title=None, source_info=None):
+def archive_content(content, title=None, source_info=None, is_read_later=False):
     """
     Save content to archive folder.
     
@@ -196,6 +196,7 @@ def archive_content(content, title=None, source_info=None):
         content: The text content to archive
         title: Optional title for the document
         source_info: Optional source information (e.g., who sent it, context)
+        is_read_later: If True, append to 稍后读.md instead of creating new file
     
     Returns:
         Path to saved file
@@ -204,6 +205,83 @@ def archive_content(content, title=None, source_info=None):
     archive_dir = OUTPUT_BASE / "归档"
     archive_dir.mkdir(parents=True, exist_ok=True)
     
+    # Handle "稍后读" mode
+    if is_read_later:
+        read_later_path = archive_dir / "稍后读.md"
+        now = datetime.now()
+        
+        # Build the new entry
+        entry = f"""
+---
+
+## {title or '未命名'}
+
+**添加时间**: {now.strftime('%Y-%m-%d %H:%M:%S')}
+{'' if not source_info else f'**来源**: {source_info}'}
+
+{content}
+
+---
+"""
+        
+        # If file exists, prepend new entry (add at top)
+        if read_later_path.exists():
+            existing_content = read_later_path.read_text(encoding='utf-8')
+            # Find the position after the frontmatter/title/description
+            lines = existing_content.split('\n')
+            
+            # Find where to insert (after the description block)
+            insert_pos = 0
+            in_frontmatter = False
+            for i, line in enumerate(lines):
+                if line.startswith('---') and i == 0:
+                    in_frontmatter = True
+                    continue
+                if in_frontmatter and line.startswith('---'):
+                    in_frontmatter = False
+                    insert_pos = i + 1
+                    continue
+                if line.startswith('# 稍后读'):
+                    insert_pos = i + 1
+                    continue
+                # After the description block (starts with >)
+                if insert_pos > 0 and line.startswith('>') and i > insert_pos:
+                    insert_pos = i + 1
+                    break
+            
+            # Insert new entry after the header section
+            new_content = '\n'.join(lines[:insert_pos]) + '\n' + entry + '\n' + '\n'.join(lines[insert_pos:])
+            read_later_path.write_text(new_content, encoding='utf-8')
+        else:
+            # Create new file with initial structure
+            initial_content = f"""---
+title: 稍后读
+created: {now.isoformat()}
+---
+
+# 稍后读
+
+> 收集待阅读的内容，按时间倒序排列（最新的在最上面）
+
+{entry}
+"""
+            read_later_path.write_text(initial_content, encoding='utf-8')
+        
+        print(f"✅ Added to 稍后读: {read_later_path}", file=sys.stderr)
+        
+        # Send Gotify notification
+        gotify_notify(
+            f"稍后读: {title or '新内容'}",
+            f"已添加到稍后读列表",
+            priority=5
+        )
+        
+        # Trigger NAS sync
+        trigger_nas_sync()
+        
+        return str(read_later_path)
+    
+    # Normal archive mode (original behavior)
     # Generate title if not provided
     if not title:
         title = generate_title(content)
@@ -262,15 +340,20 @@ archived: {now.isoformat()}
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 archive.py <content> [title] [source_info]", file=sys.stderr)
+        print("Usage: python3 archive.py <content> [title] [source_info] [--read-later]", file=sys.stderr)
         sys.exit(1)
+    
+    # Check for --read-later flag
+    is_read_later = '--read-later' in sys.argv
+    if is_read_later:
+        sys.argv.remove('--read-later')
     
     content = sys.argv[1]
     title = sys.argv[2] if len(sys.argv) > 2 else None
     source_info = sys.argv[3] if len(sys.argv) > 3 else None
     
     try:
-        result = archive_content(content, title, source_info)
+        result = archive_content(content, title, source_info, is_read_later=is_read_later)
         print(f"SUCCESS:{result}")
     except Exception as e:
         print(f"ERROR:{str(e)}", file=sys.stderr)
