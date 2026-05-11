@@ -11,6 +11,8 @@ description: Clip web articles to local Markdown files with images. Use when the
 |---------|-------|--------|---------|
 | URL provided | Main clipper | `clipper.py` | Fetch and save web articles |
 | "归档" keyword | Archive | `archive.py` | Save user-provided content |
+| "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list |
+| magnet:/ed2k: links | Link Archive | `archive_links.py` | Save magnet and ed2k links |
 | "雪球" or "xueqiu" keyword | Xueqiu Stock | `xueqiu_camofox.py` | Fetch stock discussions from xueqiu.com |
 
 ## Xueqiu Stock Sub-Skill
@@ -43,11 +45,12 @@ Save web articles as Markdown files with images to a local syncthing-synced fold
 
 When triggered by a URL (or explicit clip request):
 
-1. **Fetch** the URL using `urllib.request`
-2. **Extract** article title and content using site-specific parsers or generic HTML parser
-3. **Download** images referenced in the article
-4. **Convert** HTML content to Markdown
-5. **Save** to `~/.openclaw/workspace/syncthing/raw/YYYY-MM-DD/`
+1. **Check link type** — if magnet or ed2k, use `archive_links.py`
+2. **Fetch** the URL using `urllib.request`
+3. **Extract** article title and content using site-specific parsers or generic HTML parser
+4. **Download** images referenced in the article
+5. **Convert** HTML content to Markdown
+6. **Save** to `~/.openclaw/workspace/syncthing/raw/YYYY-MM-DD/`
 
 ## Script
 
@@ -253,6 +256,22 @@ OpenRouter API 密钥等敏感信息存储在本地配置文件：
 3. 通知失败不会阻塞剪藏流程
 
 **优先级：** 5（普通优先级）
+
+## Link Archive Sub-Skill
+
+When user provides magnet links (`magnet:?xt=...`) or ed2k links (`ed2k://|file|...`):
+
+```bash
+python3 ~/.openclaw/skills/web-clipper/scripts/archive_links.py "<text_content>"
+```
+
+**Behavior:**
+- Magnet links → appended to `syncthing/raw/归档/磁链.md`
+- ED2K links → appended to `syncthing/raw/归档/ed2k.md`
+- Each link on its own line, no empty paragraphs
+- Auto-triggers NAS sync and Gotify notification
+
+See `ARCHIVE.md` for full documentation.
 
 ## Future Enhancements
 

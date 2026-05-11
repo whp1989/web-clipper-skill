@@ -1540,16 +1540,15 @@ def fetch_with_playwright(url):
     """Use Playwright to fetch JS-rendered page content."""
     try:
         # Check if playwright is available
-        import playwright
         from playwright.sync_api import sync_playwright
         
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle")
+            page.goto(url, wait_until="networkidle", timeout=30000)
             
             # Wait for content to load
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
             
             # Get page content
             html = page.content()
@@ -1944,6 +1943,17 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     # Check parser health if a site-specific parser was used
     if parser_used:
         check_parser_health(parser_used, result)
+    
+    # Check if content might need JavaScript rendering (for generic parser fallback)
+    if not result:
+        if not html or len(html) < 5000 or 'id="__next"' in html or 'data-nextjs-page' in html or ('window.__INITIAL_STATE__' not in html and len(html) < 10000):
+            print("🔍 Content may require JavaScript rendering, trying Playwright fallback...", file=sys.stderr)
+            playwright_html = fetch_with_playwright(url)
+            if playwright_html and len(playwright_html) > len(html or ''):
+                print("✅ Playwright fallback succeeded", file=sys.stderr)
+                html = playwright_html
+            else:
+                print("❌ Playwright fallback failed or returned less content", file=sys.stderr)
         
         # If parser failed, try to diagnose and fallback to generic
         # For video pages, content might be short but still valid
@@ -2027,6 +2037,50 @@ def clip_article(url, test_mode=False, transcribe_audio=False, whisper_url=None)
     images = result.get('images', [])
     audio_url = result.get('audio_url')
     audio_file = result.get('audio_file')
+    
+    # If content is empty, try Playwright as last resort
+    if not content:
+        print("🔍 Content empty, trying Playwright as last resort...", file=sys.stderr)
+        playwright_html = fetch_with_playwright(url)
+        if playwright_html:
+            # Try generic parser again with Playwright HTML
+            extractor = ArticleExtractor(base_url=final_url)
+            try:
+                extractor.feed(playwright_html)
+            except:
+                pass
+            title = extractor.title or title
+            content = '\n'.join(extractor.content)
+            images = extractor.images
+            # Build result dict for evolution report
+            result = {
+                'title': title,
+                'content': content,
+                'images': images,
+                'description': ''
+            }
+            # If still no content, try extracting innerText via Playwright
+            if not content:
+                print("🔍 Still no content, trying innerText extraction...", file=sys.stderr)
+                try:
+                    from playwright.sync_api import sync_playwright
+                    with sync_playwright() as p:
+                        browser = p.chromium.launch(headless=True)
+                        page = browser.new_page()
+                        page.goto(url, wait_until='networkidle', timeout=30000)
+                        page.wait_for_timeout(3000)
+                        inner_text = page.evaluate('''() => {
+                            const main = document.querySelector('main') || document.body;
+                            return main.innerText;
+                        }''')
+                        page_title = page.title()
+                        browser.close()
+                    if inner_text:
+                        content = inner_text
+                        title = page_title or title
+                        print(f"✅ innerText extraction succeeded: {len(content)} chars", file=sys.stderr)
+                except Exception as e:
+                    print(f"❌ innerText extraction failed: {e}", file=sys.stderr)
     
     # Add source prefix to title
     SOURCE_PREFIXES = {

@@ -19,6 +19,55 @@ Trigger this sub-skill when:
 
 **Do NOT use for URLs** — use the main `clipper.py` for web links.
 
+## Sub-Skills
+
+| Trigger | Skill | Script | Purpose |
+|---------|-------|--------|---------|
+| "归档" keyword | Archive | `archive.py` | Save user-provided content |
+| "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list |
+| magnet:/ed2k: links | Link Archive | `archive_links.py` | Save magnet and ed2k links |
+
+## Link Archive Mode (链接存档)
+
+When user provides magnet links (`magnet:?xt=...`) or ed2k links (`ed2k://|file|...`):
+
+### Behavior
+- **Magnet links** → appended to `syncthing/raw/归档/磁链.md`
+- **ED2K links** → appended to `syncthing/raw/归档/ed2k.md`
+- Each link on its own line, no empty paragraphs between links
+- Same category always uses the same file (creates if not exists)
+
+### Script
+
+```bash
+python3 ~/.openclaw/skills/web-clipper/scripts/archive_links.py "<text_content>" [source_info]
+```
+
+### Output Location
+- **磁链**: `~/.openclaw/workspace/syncthing/raw/归档/磁链.md`
+- **ED2K**: `~/.openclaw/workspace/syncthing/raw/归档/ed2k.md`
+
+### File Format
+
+```markdown
+---
+title: 磁链存档
+created: 2026-05-11T19:56:00
+---
+
+# 磁链存档
+
+> 收集的磁力链接，按添加时间顺序排列
+
+magnet:?xt=urn:btih:abc123...
+magnet:?xt=urn:btih:def456...
+```
+
+### Auto-Trigger Conditions
+- Message contains `magnet:` links
+- Message contains `ed2k://` links
+- Automatically executes without requiring "归档" keyword
+
 ## Two Modes
 
 ### 1. 归档模式 (Archive Mode) - Default
@@ -173,9 +222,10 @@ python3 ~/.openclaw/skills/web-clipper/scripts/archive.py \
 This is a **sub-skill** of `web-clipper`. The main skill handles URLs; this sub-skill handles user content.
 
 **Detection priority:**
-1. If input is a URL → use `clipper.py`
-2. If input contains "稍后读" or "read later" → use `archive.py --read-later`
-3. If input contains "归档" or is user content → use `archive.py`
+1. If input contains `magnet:` or `ed2k://` links → use `archive_links.py`
+2. If input is a URL → use `clipper.py`
+3. If input contains "稍后读" or "read later" → use `archive.py --read-later`
+4. If input contains "归档" or is user content → use `archive.py`
 
 ## GitHub Repository
 
