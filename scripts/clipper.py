@@ -1397,6 +1397,269 @@ def transcribe_with_openrouter(audio_path, api_key, model):
             
             if 'choices' in result and len(result['choices']) > 0:
                 text = result['choices'][0].get('message', {}).get('content', '')
+                return text.strip()
+            else:
+                print(f"  ⚠️ No transcription in response: {result}", file=sys.stderr)
+                return None
+                
+    except urllib.error.HTTPError as e:
+        print(f"  ❌ OpenRouter API error: {e.code} - {e.reason}", file=sys.stderr)
+        if e.code == 500:
+            print(f"  ⚠️ OpenRouter server error (500), will try SiliconFlow fallback", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  ❌ Transcription error: {e}", file=sys.stderr)
+        return None
+
+
+def transcribe_with_siliconflow(audio_path, api_key, model):
+    """Transcribe audio using SiliconFlow API with SenseVoiceSmall model."""
+    import base64
+    
+    # Read audio file
+    with open(audio_path, 'rb') as f:
+        audio_data = f.read()
+    
+    file_size_mb = len(audio_data) / (1024 * 1024)
+    print(f"  📊 Audio file size: {file_size_mb:.1f} MB", file=sys.stderr)
+    
+    # Convert to WAV if needed (SenseVoiceSmall works best with WAV)
+    audio_path_obj = Path(audio_path)
+    if audio_path_obj.suffix.lower() != '.wav':
+        print(f"  🎵 Converting to WAV for SiliconFlow...", file=sys.stderr)
+        wav_path = audio_path_obj.parent / f"{audio_path_obj.stem}_sf.wav"
+        result = subprocess.run([
+            'ffmpeg', '-i', str(audio_path),
+            '-ar', '16000', '-ac', '1',
+            '-f', 'wav',
+            str(wav_path), '-y'
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode == 0:
+            with open(wav_path, 'rb') as f:
+                audio_data = f.read()
+            wav_path.unlink(missing_ok=True)
+        else:
+            print(f"  ⚠️ WAV conversion failed, using original format", file=sys.stderr)
+    
+    # Build multipart/form-data request
+    boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
+    
+    body = []
+    body.append(f'------{boundary}'.encode())
+    body.append(b'Content-Disposition: form-data; name="model"')
+    body.append(b'')
+    body.append(model.encode())
+    body.append(f'------{boundary}'.encode())
+    body.append(f'Content-Disposition: form-data; name="file"; filename="audio.wav"'.encode())
+    body.append(b'Content-Type: audio/wav')
+    body.append(b'')
+    body.append(audio_data)
+    body.append(f'------{boundary}'.encode())
+    body.append(b'Content-Disposition: form-data; name="language"')
+    body.append(b'')
+    body.append(b'zh')
+    body.append(f'------{boundary}--'.encode())
+    
+    body = b'\r\n'.join(body)
+    
+    api_url = "https://api.siliconflow.cn/v1/audio/transcriptions"
+    
+    req = urllib.request.Request(
+        api_url,
+        data=body,
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': f'multipart/form-data; boundary=----{boundary}'
+        },
+        method='POST'
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=180) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            
+            if 'text' in result:
+                text = result['text']
+                print(f"  ✅ SiliconFlow transcription successful ({len(text)} chars)", file=sys.stderr)
+                return text.strip()
+            else:
+                print(f"  ⚠️ No text in SiliconFlow response: {result}", file=sys.stderr)
+                return None
+                
+    except urllib.error.HTTPError as e:
+        print(f"  ❌ SiliconFlow API error: {e.code} - {e.reason}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  ❌ SiliconFlow transcription error: {e}", file=sys.stderr)
+        return None
+
+
+def transcribe_audio_segments(audio_path, api_key, model, segment_minutes=10):
+    """Split audio into segments and transcribe using OpenRouter or SiliconFlow API."""
+    import subprocess
+    import tempfile
+    import base64
+    
+    audio_path = Path(audio_path)
+    
+    # Get audio duration
+    result = subprocess.run([
+        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(audio_path)
+    ], capture_output=True, text=True, timeout=30)
+    
+    if result.returncode != 0:
+        print(f"  ❌ Failed to get audio duration", file=sys.stderr)
+        return None
+    
+    try:
+        duration = float(result.stdout.strip())
+    except:
+        print(f"  ❌ Invalid duration: {result.stdout}", file=sys.stderr)
+        return None
+    
+    print(f"  ⏱️ Audio duration: {duration:.1f}s ({duration/60:.1f}min)", file=sys.stderr)
+    
+    # Calculate segment parameters
+    segment_seconds = segment_minutes * 60
+    num_segments = int(duration / segment_seconds) + 1
+    
+    print(f"  ✂️ Splitting into {num_segments} segments ({segment_minutes}min each)", file=sys.stderr)
+    
+    transcriptions = []
+    
+    # Load config for fallback
+    config = load_api_config()
+    siliconflow_key = config.get('siliconflow_api_key')
+    siliconflow_model = config.get('siliconflow_model', 'FunAudioLLM/SenseVoiceSmall')
+    
+    for i in range(num_segments):
+        start_time = i * segment_seconds
+        end_time = min((i + 1) * segment_seconds, duration)
+        segment_duration = end_time - start_time
+        
+        if segment_duration < 5:  # Skip very short segments
+            continue
+        
+        # Extract segment
+        segment_path = audio_path.parent / f"{audio_path.stem}_seg{i:03d}.mp3"
+        
+        result = subprocess.run([
+            'ffmpeg', '-i', str(audio_path),
+            '-ss', str(start_time), '-t', str(segment_duration),
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '16000', '-ac', '1',
+            '-q:a', '2',
+            str(segment_path), '-y'
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            print(f"  ❌ Segment {i+1} extraction failed", file=sys.stderr)
+            continue
+        
+        # Transcribe segment - try OpenRouter first, then SiliconFlow fallback
+        print(f"  🎙️ Transcribing segment {i+1}/{num_segments}...", file=sys.stderr)
+        
+        text = None
+        
+        # Try OpenRouter first
+        text = transcribe_with_openrouter(segment_path, api_key, model)
+        
+        # If OpenRouter fails, try SiliconFlow
+        if not text and siliconflow_key:
+            print(f"  🔄 Trying SiliconFlow fallback...", file=sys.stderr)
+            text = transcribe_with_siliconflow(segment_path, siliconflow_key, siliconflow_model)
+        
+        if text:
+            transcriptions.append(text)
+            print(f"  ✅ Segment {i+1} done ({len(text)} chars)", file=sys.stderr)
+        else:
+            print(f"  ⚠️ Segment {i+1} failed (both OpenRouter and SiliconFlow)", file=sys.stderr)
+        
+        # Clean up segment file
+        segment_path.unlink(missing_ok=True)
+    
+    if transcriptions:
+        return '\n\n'.join(transcriptions)
+    
+    return None
+
+
+def download_and_transcribe_bilibili_video(url, title, bvid):
+    """Download Bilibili video, extract audio, and transcribe using OpenRouter or SiliconFlow."""
+    import subprocess
+    import tempfile
+    
+    config = load_api_config()
+    api_key = config.get('openrouter_api_key')
+    model = config.get('openrouter_model', 'mistralai/voxtral-small-24b-2507')
+    segment_minutes = config.get('audio_segment_minutes', 10)
+    
+    if not api_key:
+        print("  ⚠️ OpenRouter API key not found in config", file=sys.stderr)
+        return None
+    
+    # Create multimedia directory
+    multimedia_dir = OUTPUT_BASE / "multimedia"
+    multimedia_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate safe filename
+    safe_title = sanitize_filename(title) if title else bvid
+    video_path = multimedia_dir / f"{safe_title}_{bvid}.mp4"
+    audio_path = multimedia_dir / f"{safe_title}_{bvid}.mp3"
+    
+    # Check if already downloaded
+    if audio_path.exists():
+        print(f"  🎵 Audio already exists: {audio_path}", file=sys.stderr)
+    else:
+        # Download video using yt-dlp or you-get
+        print(f"  📥 Downloading video: {url}", file=sys.stderr)
+        
+        # Try yt-dlp first
+        try:
+            result = subprocess.run([
+                'yt-dlp', '-f', 'bestaudio[ext=m4a]/bestaudio',
+                '-o', str(video_path),
+                '--no-playlist',
+                url
+            ], capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                print(f"  ⚠️ yt-dlp failed, trying you-get...", file=sys.stderr)
+                # Fallback to you-get
+                result = subprocess.run([
+                    'you-get', '-o', str(multimedia_dir),
+                    '-O', f"{safe_title}_{bvid}",
+                    url
+                ], capture_output=True, text=True, timeout=300)
+                
+                if result.returncode != 0:
+                    print(f"  ❌ Video download failed", file=sys.stderr)
+                    return None
+        except FileNotFoundError:
+            print("  ❌ yt-dlp/you-get not installed", file=sys.stderr)
+            return None
+        
+        # Extract audio using ffmpeg
+        print(f"  🎵 Extracting audio...", file=sys.stderr)
+        result = subprocess.run([
+            'ffmpeg', '-i', str(video_path),
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '16000', '-ac', '1',
+            '-q:a', '2',
+            str(audio_path), '-y'
+        ], capture_output=True, text=True, timeout=300)
+        
+        if result.returncode != 0:
+            print(f"  ❌ Audio extraction failed: {result.stderr[:200]}", file=sys.stderr)
+            return None
+        
+        print(f"  ✅ Audio extracted: {audio_path}", file=sys.stderr)
+    
+    # Split audio into segments and transcribe
+    return transcribe_audio_segments(audio_path, api_key, model, segment_minutes)
                 text = text.strip()
                 if text and len(text) > 10:
                     print(f"  ✅ Transcription successful ({len(text)} chars)", file=sys.stderr)

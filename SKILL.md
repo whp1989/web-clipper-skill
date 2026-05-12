@@ -901,9 +901,9 @@ Pure Python 3 standard library only:
 
 No pip install required.
 
-## Audio Transcription (OpenRouter)
+## Audio Transcription (OpenRouter + SiliconFlow Fallback)
 
-For podcast/audio content, the skill can transcribe audio using OpenRouter API:
+For podcast/audio content, the skill can transcribe audio using OpenRouter API with automatic SiliconFlow fallback:
 
 ```bash
 # Transcribe with OpenRouter (requires API key)
@@ -914,17 +914,25 @@ python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py \
   --openrouter-key "sk-or-v1-..."
 ```
 
+**Primary API: OpenRouter**
+- Model: `mistralai/voxtral-small-24b-2507` (tested, supports Chinese)
+- Cost: ~$0.03 per 5-minute segment
+- Audio is automatically split into segments to avoid API limits
+
+**Fallback API: SiliconFlow (自动备用)**
+- Model: `FunAudioLLM/SenseVoiceSmall` (specialized for Chinese speech recognition)
+- Activated automatically when OpenRouter returns 500 errors
+- Uses OpenAI-compatible `/v1/audio/transcriptions` endpoint with multipart/form-data
+- Supports emotion detection and audio event tagging (laughter, applause, etc.)
+
 **Supported models:**
-- `mistralai/voxtral-small-24b-2507` (tested, supports Chinese)
+- `mistralai/voxtral-small-24b-2507` (OpenRouter, tested)
+- `FunAudioLLM/SenseVoiceSmall` (SiliconFlow, Chinese optimized)
 - Other audio-capable models on OpenRouter
-
-**Cost:** ~$0.03 per 5-minute segment
-
-**Note:** Audio is automatically split into 5-minute segments to avoid API limits.
 
 ## API 密钥配置（本地存储，不上传GitHub）
 
-OpenRouter API 密钥等敏感信息存储在本地配置文件：
+API keys and configuration stored in local config file:
 
 **配置文件路径：**
 - `~/.openclaw/workspace/.openclaw/api-config.json`
@@ -935,6 +943,9 @@ OpenRouter API 密钥等敏感信息存储在本地配置文件：
 {
   "openrouter_api_key": "sk-or-v1-...",
   "openrouter_model": "mistralai/voxtral-small-24b-2507",
+  "siliconflow_api_key": "sk-...",
+  "siliconflow_model": "FunAudioLLM/SenseVoiceSmall",
+  "siliconflow_base_url": "https://api.siliconflow.cn/v1",
   "audio_segment_minutes": 10,
   "gotify_server": "https://go.pandaponds.com",
   "gotify_token": "your-token-here",
@@ -947,12 +958,28 @@ OpenRouter API 密钥等敏感信息存储在本地配置文件：
 |--------|------|--------|
 | `openrouter_api_key` | OpenRouter API密钥 | 必填 |
 | `openrouter_model` | 语音转文字模型 | `mistralai/voxtral-small-24b-2507` |
+| `siliconflow_api_key` | SiliconFlow API密钥 (备用) | 可选 |
+| `siliconflow_model` | SiliconFlow语音模型 | `FunAudioLLM/SenseVoiceSmall` |
+| `siliconflow_base_url` | SiliconFlow API地址 | `https://api.siliconflow.cn/v1` |
 | `audio_segment_minutes` | 音频分段时长（分钟） | `10` |
 | `gotify_server` | Gotify服务器地址 | 可选 |
 | `gotify_token` | Gotify应用Token | 可选 |
 | `gotify_app` | Gotify应用名称 | 可选 |
 
 **注意：** 此配置文件包含敏感信息，请勿加入Git仓库。skill代码中通过 `load_api_config()` 函数读取此配置。
+
+## Fallback Behavior
+
+When OpenRouter API fails (e.g., 500 error), the skill automatically:
+1. Detects the failure after max retries (3 attempts)
+2. Switches to SiliconFlow API if configured
+3. Uses `FunAudioLLM/SenseVoiceSmall` model via multipart/form-data upload
+4. Continues transcription from where it left off
+
+If both APIs fail, the skill will:
+- Save the audio file for manual transcription later
+- Log the error details
+- Notify user of partial failure (audio saved but not transcribed)
 
 ## Gotify 通知
 
