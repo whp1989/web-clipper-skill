@@ -161,6 +161,358 @@ Other agents can install this skill:
 git clone https://github.com/whp1989/web-clipper-skill.git ~/.openclaw/skills/web-clipper
 ```
 
+## Task Completion Verification & Auto-Retry
+
+All sub-skills include built-in task completion verification and automatic retry mechanisms:
+
+### Completion Check Framework
+
+```python
+class TaskVerifier:
+    """Verifies task completion and triggers auto-retry on failure"""
+    
+    def __init__(self, max_retries=3, retry_delay=5):
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.attempt = 0
+    
+    def verify_and_retry(self, task_func, *args, **kwargs):
+        """Execute task with automatic retry on failure"""
+        while self.attempt < self.max_retries:
+            try:
+                result = task_func(*args, **kwargs)
+                if self.verify_completion(result):
+                    return result
+                else:
+                    self.attempt += 1
+                    if self.attempt < self.max_retries:
+                        time.sleep(self.retry_delay)
+                        continue
+            except Exception as e:
+                self.attempt += 1
+                if self.attempt < self.max_retries:
+                    self.log_error(e)
+                    self.apply_fix(e)
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    raise
+        
+        raise MaxRetryExceeded(f"Task failed after {self.max_retries} attempts")
+    
+    def verify_completion(self, result):
+        """Override in subclass to verify task-specific completion"""
+        return result is not None
+    
+    def log_error(self, error):
+        """Log error for analysis"""
+        log_path = f"~/.openclaw/workspace/logs/clipper_errors_{datetime.now().strftime('%Y%m%d')}.log"
+        with open(os.path.expanduser(log_path), 'a') as f:
+            f.write(f"[{datetime.now()}] Error: {str(error)}\n")
+    
+    def apply_fix(self, error):
+        """Apply automatic fix based on error type"""
+        error_str = str(error).lower()
+        
+        if "network" in error_str or "connection" in error_str:
+            # Network error: wait and retry
+            time.sleep(self.retry_delay * 2)
+        elif "permission" in error_str or "access" in error_str:
+            # Permission error: check file permissions
+            self.fix_permissions()
+        elif "parse" in error_str or "html" in error_str:
+            # Parse error: switch to fallback parser
+            self.enable_fallback_parser()
+        elif "timeout" in error_str:
+            # Timeout: increase timeout and retry
+            self.increase_timeout()
+        elif "api" in error_str or "500" in error_str:
+            # API error: switch to alternative API or wait
+            self.switch_api_endpoint()
+    
+    def fix_permissions(self):
+        """Fix file permission issues"""
+        os.system("chmod -R 755 ~/.openclaw/workspace/syncthing/raw/")
+    
+    def enable_fallback_parser(self):
+        """Enable fallback HTML parser"""
+        os.environ['CLIPPER_FALLBACK_PARSER'] = '1'
+    
+    def increase_timeout(self):
+        """Increase request timeout"""
+        os.environ['CLIPPER_TIMEOUT'] = '60'
+    
+    def switch_api_endpoint(self):
+        """Switch to alternative API endpoint"""
+        # Implemented in API-specific sub-skills
+        pass
+
+class MaxRetryExceeded(Exception):
+    pass
+```
+
+### Sub-Skill Verification Rules
+
+| Sub-Skill | Completion Criteria | Auto-Fix Strategy | Max Retries |
+|:---|:---|:---|:---|
+| Main clipper | File exists, size > 0, content valid | Switch parser, fix encoding | 3 |
+| Archive | File exists, title correct, content saved | Fix path, regenerate title | 3 |
+| Link archive | Links appended, no duplicates | Deduplicate, fix format | 3 |
+| Xueqiu stock | Data fetched, table complete | Extend timeout, retry page | 3 |
+| Audio transcribe | Audio extracted, text generated | Switch API, split segments | 3 |
+| NAS sync | Files uploaded, no errors | Retry sync, check connection | 3 |
+| Gotify notify | HTTP 200 response | Retry send, log failure | 2 |
+
+### Error Recovery Flow
+
+```
+Task Start
+    ↓
+Attempt Execution
+    ↓
+Success? → Yes → Verify Output → Valid? → Yes → Task Complete
+    ↓ No                        ↓ No
+Retry Loop ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
+    ↓
+Max Retries Reached?
+    ↓ Yes
+Log Failure → Notify User → Escalate to Manual Fix
+    ↓ No
+Analyze Error → Apply Auto-Fix → Retry
+```
+
+### Implementation in Scripts
+
+All scripts in `scripts/` directory implement the verification framework:
+
+```python
+# Example: clipper.py
+from task_verifier import TaskVerifier
+
+class ClipperVerifier(TaskVerifier):
+    def verify_completion(self, result):
+        """Verify clipper task completion"""
+        if not result or 'file_path' not in result:
+            return False
+        
+        file_path = result['file_path']
+        
+        # Check file exists
+        if not os.path.exists(file_path):
+            return False
+        
+        # Check file size > 0
+        if os.path.getsize(file_path) == 0:
+            return False
+        
+        # Check content validity
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            if len(content) < 100:  # Minimum content threshold
+                return False
+            if 'title' not in content.lower():
+                return False
+        
+        return True
+    
+    def apply_fix(self, error):
+        """Clipper-specific fixes"""
+        error_str = str(error).lower()
+        
+        if "empty" in error_str or "size" in error_str:
+            # Content empty: switch to generic parser
+            self.enable_fallback_parser()
+        elif "encoding" in error_str:
+            # Encoding issue: force UTF-8
+            os.environ['CLIPPER_ENCODING'] = 'utf-8'
+        elif "image" in error_str:
+            # Image download failed: skip images
+            os.environ['CLIPPER_SKIP_IMAGES'] = '1'
+        else:
+            super().apply_fix(error)
+
+# Usage in main function
+verifier = ClipperVerifier(max_retries=3)
+result = verifier.verify_and_retry(clip_article, url)
+```
+
+### NAS Sync Verification
+
+```python
+class NasSyncVerifier(TaskVerifier):
+    def verify_completion(self, result):
+        """Verify NAS sync completion"""
+        if not result:
+            return False
+        
+        # Check sync log
+        sync_log = result.get('sync_log', '')
+        if 'error' in sync_log.lower() or 'failed' in sync_log.lower():
+            return False
+        
+        # Verify file count matches
+        local_count = result.get('local_file_count', 0)
+        remote_count = result.get('remote_file_count', 0)
+        if local_count != remote_count:
+            return False
+        
+        return True
+    
+    def apply_fix(self, error):
+        """NAS sync-specific fixes"""
+        error_str = str(error).lower()
+        
+        if "connection" in error_str or "network" in error_str:
+            # Connection issue: check mount point
+            os.system("mount | grep syncthing || mount -a")
+        elif "permission" in error_str:
+            # Permission denied: fix SMB/NFS permissions
+            os.system("chmod -R 777 /mnt/nas/ 2>/dev/null || true")
+        elif "space" in error_str or "full" in error_str:
+            # Disk full: alert user
+            self.notify_disk_full()
+        else:
+            super().apply_fix(error)
+```
+
+### Notification Verification
+
+```python
+class NotifyVerifier(TaskVerifier):
+    def verify_completion(self, result):
+        """Verify notification sent successfully"""
+        if not result:
+            return False
+        
+        # Check HTTP status
+        status_code = result.get('status_code', 0)
+        if status_code != 200:
+            return False
+        
+        return True
+    
+    def apply_fix(self, error):
+        """Notification-specific fixes"""
+        error_str = str(error).lower()
+        
+        if "timeout" in error_str:
+            # Gotify timeout: skip notification, don't block
+            os.environ['SKIP_NOTIFY'] = '1'
+        elif "connection" in error_str:
+            # Connection failed: queue for later
+            self.queue_notification()
+        else:
+            # Other errors: log and continue
+            self.log_error(error)
+```
+
+### Master Verification Script
+
+A master verification script coordinates all sub-skills:
+
+```bash
+#!/bin/bash
+# ~/.openclaw/skills/web-clipper/scripts/verify-task.sh
+
+TASK_TYPE="$1"
+TASK_RESULT="$2"
+MAX_RETRIES=3
+RETRY_COUNT=0
+
+verify_task() {
+    case "$TASK_TYPE" in
+        "clip")
+            python3 -c "
+import sys, os
+result = '$TASK_RESULT'
+file_path = result.split('SUCCESS:')[-1].strip() if 'SUCCESS:' in result else ''
+if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 100:
+    sys.exit(0)
+else:
+    sys.exit(1)
+"
+            ;;
+        "archive")
+            python3 -c "
+import sys, os
+result = '$TASK_RESULT'
+file_path = result.split('SUCCESS:')[-1].strip() if 'SUCCESS:' in result else ''
+if file_path and os.path.exists(file_path):
+    sys.exit(0)
+else:
+    sys.exit(1)
+"
+            ;;
+        "nas_sync")
+            # Check sync log for errors
+            if echo "$TASK_RESULT" | grep -qi "error\|failed"; then
+                return 1
+            fi
+            return 0
+            ;;
+        "notify")
+            # Notification failures are non-blocking
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if verify_task; then
+        echo "✅ Task verified: $TASK_TYPE"
+        exit 0
+    fi
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    echo "⚠️ Verification failed, retry $RETRY_COUNT/$MAX_RETRIES..."
+    sleep 5
+done
+
+echo "❌ Task verification failed after $MAX_RETRIES attempts: $TASK_TYPE"
+exit 1
+```
+
+### Integration with Skill Execution
+
+All skill executions now include verification:
+
+```bash
+# Example: Main clipper execution
+python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "$URL"
+RESULT=$?
+
+# Verify task completion
+if [ $RESULT -eq 0 ]; then
+    bash ~/.openclaw/skills/web-clipper/scripts/verify-task.sh "clip" "$OUTPUT"
+    if [ $? -ne 0 ]; then
+        # Auto-retry with fixes
+        echo "Auto-retrying with fallback parser..."
+        CLIPPER_FALLBACK=1 python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "$URL"
+    fi
+fi
+```
+
+### Logging & Monitoring
+
+All verification attempts are logged:
+
+```
+~/.openclaw/workspace/logs/
+├── clipper_verification_YYYYMMDD.log
+├── clipper_errors_YYYYMMDD.log
+└── retry_stats_YYYYMMDD.json
+```
+
+**Log format:**
+```
+[2026-05-12 13:08:12] Task: clip, URL: https://example.com, Attempt: 1/3, Status: success
+[2026-05-12 13:08:15] Task: nas_sync, Attempt: 1/3, Status: retry (connection timeout)
+[2026-05-12 13:08:25] Task: nas_sync, Attempt: 2/3, Status: success
+```
+
 ## Error Handling
 
 If `clipper.py` fails:
@@ -169,6 +521,366 @@ If `clipper.py` fails:
 3. Edit `scripts/clipper.py` to fix the problem
 4. Retry the clip
 5. Report what was fixed
+
+**Auto-Retry Rules:**
+- Network errors: Retry up to 3 times with exponential backoff (5s, 10s, 20s)
+- Parse errors: Switch to fallback parser, retry once
+- Encoding errors: Force UTF-8, retry once
+- API errors (500): Wait 30s, retry up to 3 times
+- Timeout errors: Increase timeout to 60s, retry once
+- Permission errors: Fix permissions automatically, retry once
+
+**Failure Escalation:**
+1. Auto-retry with fixes (max 3 attempts)
+2. If still failing: Log detailed error report
+3. If critical: Notify user with error summary
+4. If non-critical (e.g., notification): Log and continue
+
+## Task Completion Verification & Auto-Retry
+
+All sub-skills include built-in task completion verification and automatic retry mechanisms:
+
+### Completion Check Framework
+
+```python
+class TaskVerifier:
+    """Verifies task completion and triggers auto-retry on failure"""
+    
+    def __init__(self, max_retries=3, retry_delay=5):
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.attempt = 0
+    
+    def verify_and_retry(self, task_func, *args, **kwargs):
+        """Execute task with automatic retry on failure"""
+        while self.attempt < self.max_retries:
+            try:
+                result = task_func(*args, **kwargs)
+                if self.verify_completion(result):
+                    return result
+                else:
+                    self.attempt += 1
+                    if self.attempt < self.max_retries:
+                        time.sleep(self.retry_delay)
+                        continue
+            except Exception as e:
+                self.attempt += 1
+                if self.attempt < self.max_retries:
+                    self.log_error(e)
+                    self.apply_fix(e)
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    raise
+        
+        raise MaxRetryExceeded(f"Task failed after {self.max_retries} attempts")
+    
+    def verify_completion(self, result):
+        """Override in subclass to verify task-specific completion"""
+        return result is not None
+    
+    def log_error(self, error):
+        """Log error for analysis"""
+        log_path = f"~/.openclaw/workspace/logs/clipper_errors_{datetime.now().strftime('%Y%m%d')}.log"
+        with open(os.path.expanduser(log_path), 'a') as f:
+            f.write(f"[{datetime.now()}] Error: {str(error)}\n")
+    
+    def apply_fix(self, error):
+        """Apply automatic fix based on error type"""
+        error_str = str(error).lower()
+        
+        if "network" in error_str or "connection" in error_str:
+            time.sleep(self.retry_delay * 2)
+        elif "permission" in error_str or "access" in error_str:
+            self.fix_permissions()
+        elif "parse" in error_str or "html" in error_str:
+            self.enable_fallback_parser()
+        elif "timeout" in error_str:
+            self.increase_timeout()
+        elif "api" in error_str or "500" in error_str:
+            self.switch_api_endpoint()
+    
+    def fix_permissions(self):
+        """Fix file permission issues"""
+        os.system("chmod -R 755 ~/.openclaw/workspace/syncthing/raw/")
+    
+    def enable_fallback_parser(self):
+        """Enable fallback HTML parser"""
+        os.environ['CLIPPER_FALLBACK_PARSER'] = '1'
+    
+    def increase_timeout(self):
+        """Increase request timeout"""
+        os.environ['CLIPPER_TIMEOUT'] = '60'
+    
+    def switch_api_endpoint(self):
+        """Switch to alternative API endpoint"""
+        pass
+
+class MaxRetryExceeded(Exception):
+    pass
+```
+
+### Sub-Skill Verification Rules
+
+| Sub-Skill | Completion Criteria | Auto-Fix Strategy | Max Retries |
+|:---|:---|:---|:---|
+| Main clipper | File exists, size > 0, content valid | Switch parser, fix encoding | 3 |
+| Archive | File exists, title correct, content saved | Fix path, regenerate title | 3 |
+| Link archive | Links appended, no duplicates | Deduplicate, fix format | 3 |
+| Xueqiu stock | Data fetched, table complete | Extend timeout, retry page | 3 |
+| Audio transcribe | Audio extracted, text generated | Switch API, split segments | 3 |
+| NAS sync | Files uploaded, no errors | Retry sync, check connection | 3 |
+| Gotify notify | HTTP 200 response | Retry send, log failure | 2 |
+
+### Error Recovery Flow
+
+```
+Task Start
+    ↓
+Attempt Execution
+    ↓
+Success? → Yes → Verify Output → Valid? → Yes → Task Complete
+    ↓ No                        ↓ No
+Retry Loop ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
+    ↓
+Max Retries Reached?
+    ↓ Yes
+Log Failure → Notify User → Escalate to Manual Fix
+    ↓ No
+Analyze Error → Apply Auto-Fix → Retry
+```
+
+### Implementation in Scripts
+
+All scripts in `scripts/` directory implement the verification framework:
+
+```python
+# Example: clipper.py
+from task_verifier import TaskVerifier
+
+class ClipperVerifier(TaskVerifier):
+    def verify_completion(self, result):
+        """Verify clipper task completion"""
+        if not result or 'file_path' not in result:
+            return False
+        
+        file_path = result['file_path']
+        
+        # Check file exists
+        if not os.path.exists(file_path):
+            return False
+        
+        # Check file size > 0
+        if os.path.getsize(file_path) == 0:
+            return False
+        
+        # Check content validity
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            if len(content) < 100:  # Minimum content threshold
+                return False
+            if 'title' not in content.lower():
+                return False
+        
+        return True
+    
+    def apply_fix(self, error):
+        """Clipper-specific fixes"""
+        error_str = str(error).lower()
+        
+        if "empty" in error_str or "size" in error_str:
+            # Content empty: switch to generic parser
+            self.enable_fallback_parser()
+        elif "encoding" in error_str:
+            # Encoding issue: force UTF-8
+            os.environ['CLIPPER_ENCODING'] = 'utf-8'
+        elif "image" in error_str:
+            # Image download failed: skip images
+            os.environ['CLIPPER_SKIP_IMAGES'] = '1'
+        else:
+            super().apply_fix(error)
+
+# Usage in main function
+verifier = ClipperVerifier(max_retries=3)
+result = verifier.verify_and_retry(clip_article, url)
+```
+
+### NAS Sync Verification
+
+```python
+class NasSyncVerifier(TaskVerifier):
+    def verify_completion(self, result):
+        """Verify NAS sync completion"""
+        if not result:
+            return False
+        
+        # Check sync log
+        sync_log = result.get('sync_log', '')
+        if 'error' in sync_log.lower() or 'failed' in sync_log.lower():
+            return False
+        
+        # Verify file count matches
+        local_count = result.get('local_file_count', 0)
+        remote_count = result.get('remote_file_count', 0)
+        if local_count != remote_count:
+            return False
+        
+        return True
+    
+    def apply_fix(self, error):
+        """NAS sync-specific fixes"""
+        error_str = str(error).lower()
+        
+        if "connection" in error_str or "network" in error_str:
+            # Connection issue: check mount point
+            os.system("mount | grep syncthing || mount -a")
+        elif "permission" in error_str:
+            # Permission denied: fix SMB/NFS permissions
+            os.system("chmod -R 777 /mnt/nas/ 2>/dev/null || true")
+        elif "space" in error_str or "full" in error_str:
+            # Disk full: alert user
+            self.notify_disk_full()
+        else:
+            super().apply_fix(error)
+```
+
+### Notification Verification
+
+```python
+class NotifyVerifier(TaskVerifier):
+    def verify_completion(self, result):
+        """Verify notification sent successfully"""
+        if not result:
+            return False
+        
+        # Check HTTP status
+        status_code = result.get('status_code', 0)
+        if status_code != 200:
+            return False
+        
+        return True
+    
+    def apply_fix(self, error):
+        """Notification-specific fixes"""
+        error_str = str(error).lower()
+        
+        if "timeout" in error_str:
+            # Gotify timeout: skip notification, don't block
+            os.environ['SKIP_NOTIFY'] = '1'
+        elif "connection" in error_str:
+            # Connection failed: queue for later
+            self.queue_notification()
+        else:
+            # Other errors: log and continue
+            self.log_error(error)
+```
+
+### Master Verification Script
+
+A master verification script coordinates all sub-skills:
+
+```bash
+#!/bin/bash
+# ~/.openclaw/skills/web-clipper/scripts/verify-task.sh
+
+TASK_TYPE="$1"
+TASK_RESULT="$2"
+MAX_RETRIES=3
+RETRY_COUNT=0
+
+verify_task() {
+    case "$TASK_TYPE" in
+        "clip")
+            python3 -c "
+import sys, os
+result = '$TASK_RESULT'
+file_path = result.split('SUCCESS:')[-1].strip() if 'SUCCESS:' in result else ''
+if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 100:
+    sys.exit(0)
+else:
+    sys.exit(1)
+"
+            ;;
+        "archive")
+            python3 -c "
+import sys, os
+result = '$TASK_RESULT'
+file_path = result.split('SUCCESS:')[-1].strip() if 'SUCCESS:' in result else ''
+if file_path and os.path.exists(file_path):
+    sys.exit(0)
+else:
+    sys.exit(1)
+"
+            ;;
+        "nas_sync")
+            # Check sync log for errors
+            if echo "$TASK_RESULT" | grep -qi "error\|failed"; then
+                return 1
+            fi
+            return 0
+            ;;
+        "notify")
+            # Notification failures are non-blocking
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if verify_task; then
+        echo "✅ Task verified: $TASK_TYPE"
+        exit 0
+    fi
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    echo "⚠️ Verification failed, retry $RETRY_COUNT/$MAX_RETRIES..."
+    sleep 5
+done
+
+echo "❌ Task verification failed after $MAX_RETRIES attempts: $TASK_TYPE"
+exit 1
+```
+
+### Integration with Skill Execution
+
+All skill executions now include verification:
+
+```bash
+# Example: Main clipper execution
+python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "$URL"
+RESULT=$?
+
+# Verify task completion
+if [ $RESULT -eq 0 ]; then
+    bash ~/.openclaw/skills/web-clipper/scripts/verify-task.sh "clip" "$OUTPUT"
+    if [ $? -ne 0 ]; then
+        # Auto-retry with fixes
+        echo "Auto-retrying with fallback parser..."
+        CLIPPER_FALLBACK=1 python3 ~/.openclaw/skills/web-clipper/scripts/clipper.py "$URL"
+    fi
+fi
+```
+
+### Logging & Monitoring
+
+All verification attempts are logged:
+
+```
+~/.openclaw/workspace/logs/
+├── clipper_verification_YYYYMMDD.log
+├── clipper_errors_YYYYMMDD.log
+└── retry_stats_YYYYMMDD.json
+```
+
+**Log format:**
+```
+[2026-05-12 13:08:12] Task: clip, URL: https://example.com, Attempt: 1/3, Status: success
+[2026-05-12 13:08:15] Task: nas_sync, Attempt: 1/3, Status: retry (connection timeout)
+[2026-05-12 13:08:25] Task: nas_sync, Attempt: 2/3, Status: success
+```
 
 ## Image Handling
 
