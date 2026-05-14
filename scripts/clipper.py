@@ -925,12 +925,12 @@ def parse_wechat(html, url):
     images = []
     seen_urls = set()
     if content:
-        # Find all image URLs
-        img_urls = re.findall(r'data-src="(https?://mmbiz\.qpic\.cn/[^"]+)"', content)
-        img_urls += re.findall(r'src="(https?://mmbiz\.qpic\.cn/[^"]+)"', content)
+        # Find all image URLs - support both mmbiz.qpic.cn and sz_mmbiz.qpic.cn
+        img_urls = re.findall(r'data-src="(https?://(?:sz_)?mmbiz\.qpic\.cn/[^"]+)"', content)
+        img_urls += re.findall(r'src="(https?://(?:sz_)?mmbiz\.qpic\.cn/[^"]+)"', content)
         
         for img_url in img_urls:
-            # Clean up URL - remove size parameters if any
+            # Clean up URL - ensure proper format parameter
             clean_url = re.sub(r'\bwx_fmt=[^&]+', 'wx_fmt=jpeg', img_url)
             # Skip very small images (likely icons)
             # Extract size from URL if present
@@ -982,11 +982,11 @@ def parse_wechat(html, url):
     
     full_content = '\n\n---\n\n'.join(content_parts) if content_parts else "(无内容)"
     
-    # Return with empty images list since images are now in content
+    # Return with images list for download and embedding
     return {
         'title': title,
         'content': full_content,
-        'images': []  # Images are embedded in content HTML, will be converted by html_to_markdown
+        'images': images  # Images will be downloaded and embedded in markdown
     }
 
 
@@ -1660,30 +1660,6 @@ def download_and_transcribe_bilibili_video(url, title, bvid):
     
     # Split audio into segments and transcribe
     return transcribe_audio_segments(audio_path, api_key, model, segment_minutes)
-                text = text.strip()
-                if text and len(text) > 10:
-                    print(f"  ✅ Transcription successful ({len(text)} chars)", file=sys.stderr)
-                    return text
-                else:
-                    print(f"  ⚠️ Transcription too short: '{text}'", file=sys.stderr)
-                    return None
-            elif 'error' in result:
-                print(f"  ❌ API Error: {result['error']}", file=sys.stderr)
-                return None
-    
-    except urllib.error.HTTPError as e:
-        print(f"  ❌ HTTP Error {e.code}: {e.reason}", file=sys.stderr)
-        try:
-            error_body = e.read().decode('utf-8', errors='replace')
-            print(f"     Response: {error_body[:500]}", file=sys.stderr)
-        except:
-            pass
-        return None
-    except Exception as e:
-        print(f"  ❌ Transcription failed: {e}", file=sys.stderr)
-        return None
-    
-    return None
 
 
 def _parse_bilibili_opus(opus_data, url):
