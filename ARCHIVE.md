@@ -26,6 +26,7 @@ Trigger this sub-skill when:
 | "归档" keyword | Archive | `archive.py` | Save user-provided content |
 | "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list |
 | magnet:/ed2k: links | Link Archive | `archive_links.py` | Save magnet and ed2k links |
+| "网页链接提取" keyword | Web Magnet Extractor | `extract_web_magnet.py` | Extract magnet links from web pages |
 
 ## Link Archive Mode (链接存档)
 
@@ -244,15 +245,56 @@ This is a **sub-skill** of `web-clipper`. The main skill handles URLs; this sub-
 
 **Detection priority:**
 1. If input contains `magnet:` or `ed2k://` links → use `archive_links.py`
-2. If input is a URL → use `clipper.py`
-3. If input contains "稍后读" or "read later" → use `archive.py --read-later` (MUST add --read-later flag)
-4. If input contains "归档" or is user content → use `archive.py` (default mode, creates individual file)
+2. If input contains "网页链接提取" keyword → use `extract_web_magnet.py`
+3. If input is a URL → use `clipper.py`
+4. If input contains "稍后读" or "read later" → use `archive.py --read-later` (MUST add --read-later flag)
+5. If input contains "归档" or is user content → use `archive.py` (default mode, creates individual file)
 
 ## GitHub Repository
 
 Same as main skill: https://github.com/whp1989/web-clipper-skill
 
 Archive tool is included in the same repository under `scripts/archive.py`.
+
+## Web Link Extractor (网页链接提取)
+
+When user says **"网页链接提取"** or provides a URL for magnet extraction:
+
+### Behavior
+- Fetches the web page (supports both requests and playwright)
+- Extracts all magnet links from the page
+- If multiple magnets found, selects the one with **largest file size**
+- Archives the selected magnet to `syncthing/raw/归档/磁链.md`
+- Includes source URL and timestamp
+- Triggers NAS sync and Gotify notification
+
+### Supported Sites
+- **javbus.com** (and mirrors) - detects `gid`/`uc` params, uses API if available
+- Generic sites with magnet links in `<a>` tags
+
+### Script
+
+```bash
+python3 ~/.openclaw/skills/web-clipper/scripts/extract_web_magnet.py "<url>"
+```
+
+### Example
+
+```bash
+# Extract magnet from javbus page
+python3 ~/.openclaw/skills/web-clipper/scripts/extract_web_magnet.py \
+  "https://www.javbus.com/NTR-102"
+```
+
+### Output
+- **Selected magnet**: The largest file size magnet link
+- **Archive file**: `syncthing/raw/归档/磁链.md`
+- **Format**: `magnet:?xt=...` followed by `> Source: <url> | Added: <timestamp>`
+
+### Auto-Trigger Conditions
+- Message contains **"网页链接提取"** keyword
+- User provides a URL explicitly for magnet extraction
+- Automatically executes without requiring "归档" keyword
 
 ## Future Enhancements
 
@@ -261,3 +303,4 @@ Archive tool is included in the same repository under `scripts/archive.py`.
 - Integration with wiki system for structured archiving
 - Support for archiving images/attachments alongside text
 - Read later item management (mark as read, delete, prioritize)
+- Support for more magnet sites (btso, 1337x, etc.)

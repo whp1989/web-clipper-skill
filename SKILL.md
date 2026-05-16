@@ -13,7 +13,34 @@ description: Clip web articles to local Markdown files with images. Use when the
 | "归档" keyword | Archive | `archive.py` | Save user-provided content |
 | "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list (MUST use --read-later flag) |
 | magnet:/ed2k: links | Link Archive | `archive_links.py` | Save magnet and ed2k links |
+| "网页链接提取" keyword | Web Magnet Extractor | `extract_web_magnet.py` | Extract magnet links from web pages |
 | "雪球" or "xueqiu" keyword | Xueqiu Stock | `xueqiu_camofox.py` | Fetch stock discussions from xueqiu.com |
+
+## Web Magnet Extractor Sub-Skill
+
+When user says "网页链接提取" or provides a URL for magnet extraction:
+
+```bash
+python3 ~/.openclaw/skills/web-clipper/scripts/extract_web_magnet.py "<URL>"
+```
+
+**Behavior:**
+- Fetches the web page (supports both requests and playwright)
+- Extracts all magnet links from the page
+- If multiple magnets found, selects the one with **largest file size**
+- Archives the selected magnet to `syncthing/raw/归档/磁链.md`
+- Includes source URL and timestamp
+- Triggers NAS sync and Gotify notification
+
+**Supported Sites:**
+- **javbus.com** (and mirrors) - detects `gid`/`uc` params, uses API if available
+- Generic sites with magnet links in `<a>` tags
+
+**Auto-Trigger:**
+- Message contains "网页链接提取" keyword
+- User provides a URL explicitly for magnet extraction
+
+See `ARCHIVE.md` for full documentation.
 
 ## Xueqiu Stock Sub-Skill
 
