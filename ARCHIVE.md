@@ -252,9 +252,10 @@ This is a **sub-skill** of `web-clipper`. The main skill handles URLs; this sub-
 
 ## GitHub Repository
 
-Same as main skill: https://github.com/whp1989/web-clipper-skill
+This is a **sub-skill** of the main `web-clipper` skill. All updates should be pushed to the main skill repository:
+https://github.com/whp1989/web-clipper-skill
 
-Archive tool is included in the same repository under `scripts/archive.py`.
+Archive tool is included in the same repository under `scripts/archive.py`, `scripts/archive_links.py`, and `scripts/extract_web_magnet.py`.
 
 ## Web Link Extractor (网页链接提取)
 
