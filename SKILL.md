@@ -13,7 +13,7 @@ description: Clip web articles to local Markdown files with images. Use when the
 | "归档" keyword | Archive | `archive.py` | Save user-provided content |
 | "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list (MUST use --read-later flag) |
 | magnet:/ed2k: links | Link Archive | `archive_links.py` | Save magnet and ed2k links |
-| "网页链接提取" keyword | Web Magnet Extractor | `extract_web_magnet.py` | Extract magnet links from web pages |
+| "获取网页磁链" keyword | Web Magnet Extractor | `extract_web_magnet.py` | Extract magnet links from web pages and save to 磁链.md |
 | "雪球" or "xueqiu" keyword | Xueqiu Stock | `xueqiu_camofox.py` | Fetch stock discussions from xueqiu.com |
 
 ## Web Magnet Extractor Sub-Skill
@@ -37,7 +37,7 @@ python3 ~/.openclaw/skills/web-clipper/scripts/extract_web_magnet.py "<URL>"
 - Generic sites with magnet links in `<a>` tags
 
 **Auto-Trigger:**
-- Message contains "网页链接提取" keyword
+- Message contains "获取网页磁链" or "网页磁链" or "提取磁链" keyword
 - User provides a URL explicitly for magnet extraction
 
 See `ARCHIVE.md` for full documentation.
