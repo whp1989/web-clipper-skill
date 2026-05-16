@@ -97,16 +97,37 @@ magnet:?xt=urn:btih:def456...
 3. **Append** to top of `syncthing/raw/归档/稍后读.md`
 4. **Trigger** NAS sync automatically
 
+**CRITICAL RULE:** When user says "稍后读" or "read later", ALWAYS use `--read-later` flag. Never create separate files for 稍后读 items.
+
 ## Script
 
 Use `scripts/archive.py` for the archiving operation.
 
 ```bash
-# Archive mode (default)
+# Archive mode (default) - creates individual file
 python3 ~/.openclaw/skills/web-clipper/scripts/archive.py "<content>" "<title>" "<source_info>"
 
-# Read Later mode
+# Read Later mode - appends to 稍后读.md
 python3 ~/.openclaw/skills/web-clipper/scripts/archive.py "<content>" "<title>" "<source_info>" --read-later
+```
+
+### IMPORTANT: Read Later Auto-Detection
+
+When the user's message contains **"稍后读"** or **"read later"** keyword, **MUST** add `--read-later` flag:
+
+```bash
+# CORRECT - 稍后读 mode (appends to unified file)
+python3 ~/.openclaw/skills/web-clipper/scripts/archive.py \
+  "稍后读: Interesting article..." \
+  "Article Title" \
+  "稍后读" \
+  --read-later
+
+# WRONG - creates separate file (do NOT do this for 稍后读)
+python3 ~/.openclaw/skills/web-clipper/scripts/archive.py \
+  "稍后读: Interesting article..." \
+  "Article Title" \
+  "稍后读"
 ```
 
 ### Parameters
@@ -224,8 +245,8 @@ This is a **sub-skill** of `web-clipper`. The main skill handles URLs; this sub-
 **Detection priority:**
 1. If input contains `magnet:` or `ed2k://` links → use `archive_links.py`
 2. If input is a URL → use `clipper.py`
-3. If input contains "稍后读" or "read later" → use `archive.py --read-later`
-4. If input contains "归档" or is user content → use `archive.py`
+3. If input contains "稍后读" or "read later" → use `archive.py --read-later` (MUST add --read-later flag)
+4. If input contains "归档" or is user content → use `archive.py` (default mode, creates individual file)
 
 ## GitHub Repository
 

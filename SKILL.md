@@ -11,7 +11,7 @@ description: Clip web articles to local Markdown files with images. Use when the
 |---------|-------|--------|---------|
 | URL provided | Main clipper | `clipper.py` | Fetch and save web articles |
 | "归档" keyword | Archive | `archive.py` | Save user-provided content |
-| "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list |
+| "稍后读" keyword | Read Later | `archive.py --read-later` | Append to read later list (MUST use --read-later flag) |
 | magnet:/ed2k: links | Link Archive | `archive_links.py` | Save magnet and ed2k links |
 | "雪球" or "xueqiu" keyword | Xueqiu Stock | `xueqiu_camofox.py` | Fetch stock discussions from xueqiu.com |
 
