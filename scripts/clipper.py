@@ -451,7 +451,31 @@ def parse_wallstreetcn(html, url):
     if not article_id:
         return None
     
-    # Find the article ID in HTML
+    # Try NEW structure: __SSR__ = {"state":{"default":{"children":{"default":{"data":{..."article":{...}}}}}}
+    ssr_start = html.find('__SSR__ = ')
+    if ssr_start > 0:
+        try:
+            json_start = ssr_start + len('__SSR__ = ')
+            script_end = html.find('</script>', json_start)
+            if script_end > 0:
+                json_str = html[json_start:script_end]
+                data = json.loads(json_str)
+                
+                # Navigate the nested structure
+                if 'state' in data and 'default' in data['state']:
+                    default_state = data['state']['default']
+                    if 'children' in default_state and 'default' in default_state['children']:
+                        inner = default_state['children']['default']
+                        if 'data' in inner:
+                            article_data = inner['data']
+                            # Verify this is the right article
+                            if str(article_data.get('id')) == article_id:
+                                print(f"  ✓ Found article in __SSR__ structure", file=sys.stderr)
+                                return extract_wallstreetcn_article(article_data, url)
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"  __SSR__ parse failed: {e}, falling back", file=sys.stderr)
+    
+    # Try OLD structure: window.__INITIAL_STATE__ or direct JSON
     pos = html.find(f'"id":{article_id}')
     if pos < 0:
         pos = html.find(f'"id": {article_id}')
@@ -628,6 +652,118 @@ def parse_wallstreetcn(html, url):
         if og_image and og_image not in seen_urls:
             seen_urls.add(og_image)
             images.append((og_image, ''))
+    
+    if not content:
+        return None
+    
+    return {
+        'title': title,
+        'content': content,
+        'images': images
+    }
+
+
+def extract_wallstreetcn_article(article_data, url):
+    """Extract article data from the new __SSR__ structure."""
+    # The article data might be nested under 'article' key
+    if 'article' in article_data and isinstance(article_data['article'], dict):
+        article_data = article_data['article']
+    
+    # Extract title
+    title = article_data.get('title', '')
+    if not title:
+        title = article_data.get('content_title', '')
+    
+    # Clean title
+    title = title.replace('\\"', '"').strip()
+    
+    # Extract content
+    content = article_data.get('content', '')
+    if not content:
+        content = article_data.get('content_text', '')
+    if not content:
+        content = article_data.get('text', '')
+    
+    # For livenews, the content might be HTML
+    if content and content.startswith('<'):
+        # It's HTML content, keep it as is for html_to_markdown to process
+        pass
+    
+    # Unescape content
+    if content:
+        content = content.replace('\\n', '\n').replace('\\t', '\t')
+        content = content.replace('\\u003C', '<').replace('\\u003c', '<')
+        content = content.replace('\\u003E', '>').replace('\\u003e', '>')
+        content = content.replace('\\/', '/')
+        content = content.replace('\\"', '"')
+        content = content.replace("\\'", "'")
+    
+    # Extract images from multiple possible fields
+    images = []
+    seen_urls = set()
+    
+    # 1. Check images array
+    image_list = article_data.get('images', [])
+    if isinstance(image_list, list):
+        for img in image_list:
+            if isinstance(img, dict):
+                img_url = img.get('url') or img.get('src') or img.get('uri')
+            elif isinstance(img, str):
+                img_url = img
+            else:
+                img_url = None
+            
+            if img_url and img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append((img_url, ''))
+    
+    # 2. Check single image field (could be dict or string)
+    single_image = article_data.get('image')
+    if single_image:
+        if isinstance(single_image, dict):
+            img_url = single_image.get('url') or single_image.get('src') or single_image.get('uri')
+        elif isinstance(single_image, str):
+            img_url = single_image
+        else:
+            img_url = None
+        
+        if img_url and img_url not in seen_urls:
+            seen_urls.add(img_url)
+            images.append((img_url, ''))
+    
+    # 3. Check cover_image
+    cover = article_data.get('cover_image')
+    if cover and isinstance(cover, dict):
+        cover_url = cover.get('url') or cover.get('uri') or cover.get('src')
+        if cover_url and cover_url not in seen_urls:
+            seen_urls.add(cover_url)
+            images.append((cover_url, '封面'))
+    elif cover and isinstance(cover, str) and cover not in seen_urls:
+        seen_urls.add(cover)
+        images.append((cover, '封面'))
+    
+    # 4. Extract images from content HTML
+    if content:
+        content_images = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content)
+        for img_url in content_images:
+            if img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append((img_url, ''))
+    
+    # 5. For livenews, check live_news_images field
+    live_images = article_data.get('live_news_images', [])
+    if isinstance(live_images, list):
+        for img in live_images:
+            if isinstance(img, dict):
+                img_url = img.get('url') or img.get('src') or img.get('uri')
+            elif isinstance(img, str):
+                img_url = img
+            else:
+                img_url = None
+            
+            if img_url and img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append((img_url, ''))
     
     if not content:
         return None
